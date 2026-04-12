@@ -35,6 +35,15 @@ class Messages:
     scan_report_saved: str
     scan_status_knn_suffix: str
     scan_status_merged_suffix: str
+    pdf_check_description: str
+    pdf_check_no_pdfs: str
+    pdf_check_found_pdfs: str
+    pdf_check_done: str
+    pdf_check_weak_table_title: str
+    pdf_check_table_file: str
+    pdf_check_table_effective_length: str
+    pdf_check_failed: str
+    pdf_check_passed: str
 
     # Cache messages
     cache_docling_hit: str
@@ -121,8 +130,10 @@ class Messages:
     cli_help_color: str
     cli_help_version: str
     cli_help_folder_scan: str
+    cli_help_folder_pdf_check: str
     cli_help_output_report: str
     cli_help_disable_cache: str
+    cli_help_cached_vlm_only: str
     cli_help_disable_knn_repair: str
     cli_help_folder_organize: str
     cli_help_target_folder: str
@@ -245,6 +256,19 @@ ZH_CN = Messages(
     scan_report_saved="报告已保存: {path}",
     scan_status_knn_suffix="k-NN 修复: {count}",
     scan_status_merged_suffix="已合并: {count}",
+    pdf_check_description="只检查 PDF 提取，不执行向量化、聚类或命名",
+    pdf_check_no_pdfs="未找到 PDF 文件",
+    pdf_check_found_pdfs="找到 {count} 个 PDF 文件",
+    pdf_check_done=(
+        "PDF 提取检查完成 (文档缓存: {doc_cache_hits}, VLM缓存: {vlm_cache_hits}, "
+        "VLM回退: {vlm_fallback_calls}, 重复文件: {duplicates}, "
+        "弱内容: {weak}, 空内容: {empty})"
+    ),
+    pdf_check_weak_table_title="弱内容 PDF",
+    pdf_check_table_file="文件",
+    pdf_check_table_effective_length="有效长度",
+    pdf_check_failed="{count} 个 PDF 提取结果低于阈值",
+    pdf_check_passed="{count} 个 PDF 提取结果通过检查",
     # Cache messages
     cache_docling_hit="文档缓存: {count}",
     cache_vlm_hit="VLM缓存: {count}",
@@ -324,8 +348,10 @@ ZH_CN = Messages(
     cli_help_color="强制启用颜色输出",
     cli_help_version="显示版本",
     cli_help_folder_scan="要扫描的文件夹",
+    cli_help_folder_pdf_check="要检查的 PDF 文件夹",
     cli_help_output_report="输出 JSON 报告路径",
     cli_help_disable_cache="禁用缓存",
+    cli_help_cached_vlm_only="只使用已缓存的 VLM 结果，不调用 VLM API",
     cli_help_disable_knn_repair="禁用 k-NN 噪音修复",
     cli_help_folder_organize="要整理的文件夹",
     cli_help_target_folder="目标文件夹",
@@ -480,6 +506,19 @@ EN = Messages(
     scan_report_saved="Report saved: {path}",
     scan_status_knn_suffix="k-NN repaired: {count}",
     scan_status_merged_suffix="Merged: {count}",
+    pdf_check_description="Check PDF extraction only, without embedding, clustering, or naming",
+    pdf_check_no_pdfs="No PDF files found",
+    pdf_check_found_pdfs="Found {count} PDF files",
+    pdf_check_done=(
+        "PDF extraction check completed (doc cache: {doc_cache_hits}, "
+        "VLM cache: {vlm_cache_hits}, VLM fallback: {vlm_fallback_calls}, "
+        "duplicates: {duplicates}, weak: {weak}, empty: {empty})"
+    ),
+    pdf_check_weak_table_title="Weak PDF contents",
+    pdf_check_table_file="File",
+    pdf_check_table_effective_length="Effective length",
+    pdf_check_failed="{count} PDF extraction results are below threshold",
+    pdf_check_passed="{count} PDF extraction results passed",
     # Cache messages
     cache_docling_hit="Doc cache: {count}",
     cache_vlm_hit="VLM cache: {count}",
@@ -562,8 +601,10 @@ EN = Messages(
     cli_help_color="Force color output",
     cli_help_version="Show version",
     cli_help_folder_scan="Folder to scan",
+    cli_help_folder_pdf_check="Folder with PDF files to check",
     cli_help_output_report="Output JSON report path",
     cli_help_disable_cache="Disable cache",
+    cli_help_cached_vlm_only="Use cached VLM results only; do not call the VLM API",
     cli_help_disable_knn_repair="Disable k-NN noise repair",
     cli_help_folder_organize="Folder to organize",
     cli_help_target_folder="Target folder",

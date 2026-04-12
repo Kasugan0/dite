@@ -23,6 +23,28 @@ def test_update_vlm_content_upsert_inserts_when_missing(tmp_path: Path) -> None:
     cache.close()
 
 
+def test_get_vlm_content_reuses_same_hash_across_paths(tmp_path: Path) -> None:
+    db_path = tmp_path / "cache.db"
+    source_path = tmp_path / "source.pdf"
+    alias_path = tmp_path / "alias.pdf"
+    source_path.write_text("same pdf bytes", encoding="utf-8")
+    alias_path.write_text("same pdf bytes", encoding="utf-8")
+
+    cache = FileCache(db_path=db_path)
+    cache.update_vlm_content(
+        file_path=source_path,
+        file_hash="same-hash",
+        vlm_content="vlm result",
+        vlm_version=2,
+    )
+
+    assert cache.get_vlm_content(alias_path, "same-hash", required_version=2) == (
+        "vlm result"
+    )
+    assert cache.get_vlm_content(alias_path, "same-hash", required_version=3) is None
+    cache.close()
+
+
 def test_update_vlm_content_upsert_updates_existing_row(tmp_path: Path) -> None:
     db_path = tmp_path / "cache.db"
     file_path = tmp_path / "doc.pdf"

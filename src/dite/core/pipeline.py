@@ -37,6 +37,7 @@ class PipelineOptions:
     use_embedding_cache: bool = True
     repair_noise: bool = True
     merge_same_name: bool = False
+    allow_vlm_api: bool = True
     exclude_paths: list[Path] = field(default_factory=list)
 
 
@@ -119,6 +120,29 @@ class PipelineService:
             cluster_names=cluster_names,
             noise_repaired=noise_repaired,
             clusters_merged=clusters_merged,
+            **metrics,
+        )
+
+    def extract_files(
+        self, files: list[Path], options: PipelineOptions
+    ) -> PipelineResult:
+        """Extract file contents without embedding, clustering, or naming."""
+        if not files:
+            return PipelineResult(
+                files=[],
+                contents=[],
+                embeddings=np.array([]),
+                labels=np.array([]),
+                cluster_names={},
+            )
+
+        contents, _file_hashes, metrics = self._extract_contents(files, options)
+        return PipelineResult(
+            files=files,
+            contents=contents,
+            embeddings=np.array([]),
+            labels=np.array([]),
+            cluster_names={},
             **metrics,
         )
 
@@ -270,7 +294,7 @@ class PipelineService:
                             )
                         )
 
-                if vlm_content is None:
+                if vlm_content is None and options.allow_vlm_api:
                     self.logger.debug(t("debug_extract_vlm_api_call"))
                     vlm_result = extract_with_vlm_fallback(
                         file,

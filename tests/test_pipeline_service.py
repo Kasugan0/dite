@@ -15,6 +15,7 @@ from dite.core.pipeline import PipelineOptions, PipelineService
 from dite.core.scanner import scan_files
 from dite.extractors.base import ExtractionResult
 from dite.i18n import set_locale
+from dite.utils.hashing import compute_file_hash
 from dite.utils.logging import setup_logging
 
 
@@ -107,6 +108,195 @@ def test_pipeline_reuses_vlm_cache_across_runs(tmp_path: Path, monkeypatch) -> N
     assert second.vlm_cache_hits == 1
     assert call_count == {"doc": 1, "vlm": 1, "emb": 1}
 
+    cache.close()
+
+
+def test_extract_files_stops_before_embedding_and_clustering(
+    tmp_path: Path, monkeypatch
+) -> None:
+    doc = tmp_path / "sample.pdf"
+    doc.write_text("fake-pdf-content", encoding="utf-8")
+
+    service = PipelineService(client=object(), config=Config(), cache=None)
+
+    def fake_extract_document(
+        file_path: Path, client, registry=None, config=None
+    ) -> ExtractionResult:
+        return ExtractionResult(
+            content="usable extracted content" * 20,
+            success=True,
+            extractor="docling",
+        )
+
+    def fail_get_embeddings(*args, **kwargs) -> np.ndarray:
+        raise AssertionError("embedding should not run in PDF extraction check")
+
+    def fail_cluster_documents(*args, **kwargs):
+        raise AssertionError("clustering should not run in PDF extraction check")
+
+    def fail_generate_all_cluster_names(*args, **kwargs):
+        raise AssertionError("naming should not run in PDF extraction check")
+
+    monkeypatch.setattr("dite.core.pipeline.extract_document", fake_extract_document)
+    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fail_get_embeddings)
+    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fail_cluster_documents)
+    monkeypatch.setattr(
+        "dite.core.pipeline.generate_all_cluster_names",
+        fail_generate_all_cluster_names,
+    )
+
+    result = service.extract_files(
+        [doc],
+        PipelineOptions(use_cache=False, use_embedding_cache=False),
+    )
+
+    assert result.files == [doc]
+    assert result.contents == ["usable extracted content" * 20]
+    assert result.embeddings.size == 0
+    assert result.labels.size == 0
+    assert result.cluster_names == {}
+
+
+def test_extract_files_can_disable_vlm_api(tmp_path: Path, monkeypatch) -> None:
+    doc = tmp_path / "sample.pdf"
+    doc.write_text("fake-pdf-content", encoding="utf-8")
+
+    service = PipelineService(client=object(), config=Config(), cache=None)
+
+    def fake_extract_document(
+        file_path: Path, client, registry=None, config=None
+    ) -> ExtractionResult:
+        return ExtractionResult(content="", success=False, extractor="docling")
+
+    def fake_extract_with_vlm_fallback(
+        file_path: Path, client, config=None
+    ) -> ExtractionResult:
+        raise AssertionError("VLM API should not run when disabled")
+
+    monkeypatch.setattr("dite.core.pipeline.extract_document", fake_extract_document)
+    monkeypatch.setattr(
+        "dite.core.pipeline.needs_vlm_fallback",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "dite.core.pipeline.extract_with_vlm_fallback",
+        fake_extract_with_vlm_fallback,
+    )
+
+    result = service.extract_files(
+        [doc],
+        PipelineOptions(
+            use_cache=False,
+            use_embedding_cache=False,
+            allow_vlm_api=False,
+        ),
+    )
+
+    assert result.contents == [""]
+    assert result.vlm_fallback_count == 0
+
+
+def test_pipeline_reuses_vlm_cache_by_hash_across_paths(
+    tmp_path: Path, monkeypatch
+) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    cached_source = tmp_path / "cached-source.pdf"
+    alias = docs / "alias.pdf"
+    cached_source.write_text("same-pdf-bytes", encoding="utf-8")
+    alias.write_text("same-pdf-bytes", encoding="utf-8")
+    file_hash = compute_file_hash(alias)
+
+    cache = FileCache(db_path=tmp_path / "cache.db")
+    cache.update_vlm_content(
+        file_path=cached_source,
+        file_hash=file_hash,
+        vlm_content="cached vlm content from another path",
+        vlm_version=2,
+    )
+    config = Config()
+    service = PipelineService(client=object(), config=config, cache=cache)
+
+    call_count = {"doc": 0, "vlm": 0, "emb": 0}
+    captured: dict[str, list[str]] = {}
+
+    def fake_extract_document(
+        file_path: Path, client, registry=None, config=None
+    ) -> ExtractionResult:
+        call_count["doc"] += 1
+        raise AssertionError("Docling should not run when VLM hash cache exists")
+
+    def fake_extract_with_vlm_fallback(
+        file_path: Path, client, config=None
+    ) -> ExtractionResult:
+        call_count["vlm"] += 1
+        raise AssertionError("VLM should not run when VLM hash cache exists")
+
+    def fake_needs_vlm_fallback(
+        content: str,
+        file_path: Path,
+        vlm_fallback_threshold=None,
+        config=None,
+    ) -> bool:
+        return file_path.suffix.lower() == ".pdf"
+
+    def fake_get_embeddings(
+        client, texts, file_names, embedding_model=None
+    ) -> np.ndarray:
+        call_count["emb"] += 1
+        captured["texts"] = texts
+        captured["file_names"] = file_names
+        return np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
+
+    def fake_cluster_documents(
+        embeddings: np.ndarray,
+        repair_noise: bool,
+        clustering=None,
+        item_names=None,
+    ):
+        return np.array([0]), 0
+
+    def fake_generate_all_cluster_names(
+        client,
+        labels: np.ndarray,
+        contents: list[str],
+        files: list[Path],
+        embeddings: np.ndarray | None = None,
+        merge_same_name: bool = True,
+        llm_model: str | None = None,
+        config: Config | None = None,
+    ):
+        return labels, {0: "Cluster_A"}, 0
+
+    monkeypatch.setattr("dite.core.pipeline.extract_document", fake_extract_document)
+    monkeypatch.setattr(
+        "dite.core.pipeline.extract_with_vlm_fallback", fake_extract_with_vlm_fallback
+    )
+    monkeypatch.setattr(
+        "dite.core.pipeline.needs_vlm_fallback", fake_needs_vlm_fallback
+    )
+    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr(
+        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+    )
+
+    result = service.run(
+        docs,
+        PipelineOptions(
+            use_cache=True,
+            use_embedding_cache=True,
+            repair_noise=True,
+            merge_same_name=False,
+        ),
+    )
+
+    assert result.vlm_cache_hits == 1
+    assert result.vlm_fallback_count == 0
+    assert call_count == {"doc": 0, "vlm": 0, "emb": 1}
+    assert result.contents == ["cached vlm content from another path"]
+    assert captured["texts"] == ["cached vlm content from another path"]
+    assert captured["file_names"] == ["alias.pdf"]
     cache.close()
 
 

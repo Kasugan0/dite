@@ -428,6 +428,22 @@ class FileCache:
         ):
             return entry.vlm_content
 
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """
+            SELECT vlm_content FROM file_cache
+            WHERE file_hash = ?
+              AND vlm_content IS NOT NULL
+              AND vlm_version = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (file_hash, required_version),
+        )
+        row = cursor.fetchone()
+        if row:
+            return row["vlm_content"]
+
         return None
 
     def clear(self) -> int:

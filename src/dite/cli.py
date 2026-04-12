@@ -49,11 +49,13 @@ from dite.core.pipeline import (  # noqa: E402
     PipelineResult,
     PipelineService,
 )
+from dite.core.scanner import scan_files  # noqa: E402
 from dite.extractors.docling import (  # noqa: E402
     download_docling_pdf_models,
     get_docling_pdf_artifacts_path,
     has_docling_pdf_artifacts,
 )
+from dite.extractors.router import _compute_effective_content_length  # noqa: E402
 from dite.i18n import set_locale, t  # noqa: E402
 from dite.utils.llm import format_api_error  # noqa: E402
 from dite.utils.logging import get_logger, setup_logging  # noqa: E402
@@ -418,6 +420,124 @@ def scan(
 
     # 打印报告
     _print_report(report)
+
+
+@app.command("pdf-check", help=t("pdf_check_description"))
+def pdf_check(
+    ctx: typer.Context,
+    folder: Annotated[
+        Path,
+        typer.Argument(help=t("cli_help_folder_pdf_check")),
+    ],
+    verbose: Annotated[
+        bool,
+        typer.Option("--verbose", "-v", help=t("cli_help_verbose")),
+    ] = False,
+    quiet: Annotated[
+        bool,
+        typer.Option("--quiet", "-q", help=t("cli_help_quiet")),
+    ] = False,
+    no_cache: Annotated[
+        bool,
+        typer.Option("--no-cache", help=t("cli_help_disable_cache")),
+    ] = False,
+    cached_vlm_only: Annotated[
+        bool,
+        typer.Option("--cached-vlm-only", help=t("cli_help_cached_vlm_only")),
+    ] = False,
+):
+    """Run PDF extraction checks without embedding, clustering, or naming."""
+    if verbose or quiet:
+        setup_logging(verbose=verbose, quiet=quiet)
+
+    logger = get_logger()
+    config = _get_app_config(ctx)
+
+    logger.print(f"[bold blue]{t('cli_title')}[/bold blue]\n")
+
+    if not folder.exists():
+        logger.error(t("scan_folder_not_found", folder=folder))
+        raise typer.Exit(1)
+
+    files = scan_files(folder, extensions={".pdf"})
+    if not files:
+        logger.error(t("pdf_check_no_pdfs"))
+        raise typer.Exit(1)
+
+    client = _get_client(config)
+    cache = (
+        FileCache(
+            cache_dir=config.cache.directory,
+            max_size_gb=config.cache.max_size_gb,
+        )
+        if not no_cache and config.cache.enabled
+        else None
+    )
+    pipeline = PipelineService(client=client, config=config, cache=cache)
+
+    try:
+        result = pipeline.extract_files(
+            files,
+            PipelineOptions(
+                use_cache=cache is not None,
+                use_embedding_cache=False,
+                repair_noise=False,
+                merge_same_name=False,
+                allow_vlm_api=not cached_vlm_only,
+                exclude_paths=[],
+            ),
+        )
+    except (APIConnectionError, APITimeoutError):
+        logger.error(t("error_api_connection_failed"))
+        if cache:
+            cache.close()
+        raise typer.Exit(1) from None
+    except APIError as exc:
+        logger.error(t("error_api_request_failed", error=format_api_error(exc)))
+        if cache:
+            cache.close()
+        raise typer.Exit(1) from None
+    except Exception as exc:
+        logger.error(t("error_processing_failed", error=exc))
+        if cache:
+            cache.close()
+        raise typer.Exit(1) from None
+
+    if cache:
+        cache.close()
+
+    threshold = config.processing.vlm_fallback_threshold
+    weak_files = [
+        (file, _compute_effective_content_length(content))
+        for file, content in zip(result.files, result.contents, strict=True)
+        if _compute_effective_content_length(content) < threshold
+    ]
+    empty_count = sum(1 for _file, length in weak_files if length == 0)
+
+    logger.status(t("pdf_check_found_pdfs", count=len(result.files)))
+    logger.status(
+        t(
+            "pdf_check_done",
+            doc_cache_hits=result.docling_cache_hits,
+            vlm_cache_hits=result.vlm_cache_hits,
+            vlm_fallback_calls=result.vlm_fallback_count,
+            duplicates=result.duplicate_count,
+            weak=len(weak_files),
+            empty=empty_count,
+        )
+    )
+
+    if weak_files:
+        table = Table(title=t("pdf_check_weak_table_title"))
+        table.add_column(t("pdf_check_table_file"), style="path")
+        table.add_column(t("pdf_check_table_effective_length"), justify="right")
+        for file, length in weak_files:
+            table.add_row(str(file), str(length))
+        logger.print_table(table)
+        logger.error(t("pdf_check_failed", count=len(weak_files)))
+        raise typer.Exit(1)
+
+    logger.success(t("pdf_check_passed", count=len(result.files)))
 
 
 @app.command(help=t("organize_description"))

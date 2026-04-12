@@ -2,10 +2,12 @@
 
 from pathlib import Path
 
+import numpy as np
 from typer.testing import CliRunner
 
 from dite.cli import app
 from dite.core.organizer import OrganizePreview
+from dite.core.pipeline import PipelineResult
 
 
 def _write_test_config(tmp_path: Path, monkeypatch, locale: str = "en") -> Path:
@@ -48,6 +50,51 @@ def test_dite_scan_help_with_en_us_locale(tmp_path: Path, monkeypatch) -> None:
     _write_test_config(tmp_path, monkeypatch, locale="en-US")
     result = runner.invoke(app, ["scan", "--help"])
     assert result.exit_code == 0
+
+
+def test_dite_pdf_check_uses_pdf_only_and_stops_before_pipeline_scan(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runner = CliRunner()
+    _write_test_config(tmp_path, monkeypatch)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    pdf = docs / "doc.pdf"
+    txt = docs / "doc.txt"
+    pdf.write_text("pdf", encoding="utf-8")
+    txt.write_text("txt", encoding="utf-8")
+    calls: dict[str, object] = {}
+
+    class FakePipelineService:
+        def __init__(self, client, config=None, cache=None):
+            calls["cache_enabled"] = cache is not None
+
+        def extract_files(self, files, options):
+            calls["files"] = [file.name for file in files]
+            calls["use_embedding_cache"] = options.use_embedding_cache
+            calls["repair_noise"] = options.repair_noise
+            calls["allow_vlm_api"] = options.allow_vlm_api
+            return PipelineResult(
+                files=files,
+                contents=["usable PDF content" * 20],
+                embeddings=np.array([]),
+                labels=np.array([]),
+                cluster_names={},
+            )
+
+    monkeypatch.setattr("dite.cli.PipelineService", FakePipelineService)
+
+    result = runner.invoke(app, ["pdf-check", str(docs)])
+
+    assert result.exit_code == 0
+    assert calls == {
+        "cache_enabled": True,
+        "files": ["doc.pdf"],
+        "use_embedding_cache": False,
+        "repair_noise": False,
+        "allow_vlm_api": True,
+    }
+    assert "PDF extraction results passed" in result.output
 
 
 def test_dite_organize_help(tmp_path: Path, monkeypatch) -> None:
