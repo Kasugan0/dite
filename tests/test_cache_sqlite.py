@@ -1,0 +1,220 @@
+import sqlite3
+from pathlib import Path
+
+import numpy as np
+
+from dite.cache import FileCache
+
+
+def test_update_vlm_content_upsert_inserts_when_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "cache.db"
+    file_path = tmp_path / "doc.pdf"
+    file_path.write_text("dummy", encoding="utf-8")
+
+    cache = FileCache(db_path=db_path)
+    cache.update_vlm_content(
+        file_path=file_path,
+        file_hash="hash-1",
+        vlm_content="vlm result",
+        vlm_version=2,
+    )
+
+    assert cache.get_vlm_content(file_path, "hash-1", required_version=2) == "vlm result"
+    cache.close()
+
+
+def test_update_vlm_content_upsert_updates_existing_row(tmp_path: Path) -> None:
+    db_path = tmp_path / "cache.db"
+    file_path = tmp_path / "doc.pdf"
+    file_path.write_text("dummy", encoding="utf-8")
+
+    cache = FileCache(db_path=db_path)
+    cache.save(
+        file_path=file_path,
+        file_hash="hash-2",
+        file_mtime=file_path.stat().st_mtime,
+        content_md="docling content",
+        embedding=np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        model_version="embed-v1",
+    )
+
+    cache.update_vlm_content(
+        file_path=file_path,
+        file_hash="hash-2",
+        vlm_content="vlm better content",
+        vlm_version=2,
+    )
+
+    entry = cache.get_by_path(file_path)
+    assert entry is not None
+    assert entry.content_md == "docling content"
+    assert entry.vlm_content == "vlm better content"
+    assert entry.vlm_version == 2
+    assert entry.embedding is None
+    cache.close()
+
+
+def test_save_embedding_does_not_drop_existing_vlm_cache(tmp_path: Path) -> None:
+    db_path = tmp_path / "cache.db"
+    file_path = tmp_path / "doc.pdf"
+    file_path.write_text("dummy", encoding="utf-8")
+
+    cache = FileCache(db_path=db_path)
+    cache.update_vlm_content(
+        file_path=file_path,
+        file_hash="hash-3",
+        vlm_content="vlm kept",
+        vlm_version=2,
+    )
+
+    cache.save(
+        file_path=file_path,
+        file_hash="hash-3",
+        file_mtime=file_path.stat().st_mtime,
+        content_md="docling content",
+        embedding=np.array([4.0, 5.0, 6.0], dtype=np.float32),
+        model_version="embed-v1",
+    )
+
+    assert cache.get_vlm_content(file_path, "hash-3", required_version=2) == "vlm kept"
+    cache.close()
+
+
+def test_update_embedding_does_not_overwrite_content_layers(tmp_path: Path) -> None:
+    db_path = tmp_path / "cache.db"
+    file_path = tmp_path / "doc.pdf"
+    file_path.write_text("dummy", encoding="utf-8")
+
+    cache = FileCache(db_path=db_path)
+    cache.save(
+        file_path=file_path,
+        file_hash="hash-embedding",
+        file_mtime=file_path.stat().st_mtime,
+        content_md="full docling content",
+        model_version="embed-v1",
+    )
+    cache.update_vlm_content(
+        file_path=file_path,
+        file_hash="hash-embedding",
+        vlm_content="vlm fallback content",
+        vlm_version=2,
+    )
+
+    cache.update_embedding(
+        file_path=file_path,
+        file_hash="hash-embedding",
+        embedding=np.array([7.0, 8.0, 9.0], dtype=np.float32),
+        model_version="embed-v2",
+    )
+
+    entry = cache.get_by_path(file_path)
+    assert entry is not None
+    assert entry.content_md == "full docling content"
+    assert entry.vlm_content == "vlm fallback content"
+    assert entry.vlm_version == 2
+    assert cache.get_embedding(
+        file_path,
+        "hash-embedding",
+        required_model_version="embed-v2",
+    ) is not None
+    cache.close()
+
+
+def test_cache_upsert_keeps_single_row_per_file_hash(tmp_path: Path) -> None:
+    db_path = tmp_path / "cache.db"
+    file_path = tmp_path / "doc.pdf"
+    file_path.write_text("dummy", encoding="utf-8")
+
+    cache = FileCache(db_path=db_path)
+    cache.update_vlm_content(
+        file_path=file_path,
+        file_hash="hash-4",
+        vlm_content="vlm-v1",
+        vlm_version=1,
+    )
+    cache.update_vlm_content(
+        file_path=file_path,
+        file_hash="hash-4",
+        vlm_content="vlm-v2",
+        vlm_version=2,
+    )
+    cache.save(
+        file_path=file_path,
+        file_hash="hash-4",
+        file_mtime=file_path.stat().st_mtime,
+        content_md="docling content",
+        model_version="embed-v1",
+    )
+    cache.close()
+
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.execute(
+            """
+            SELECT COUNT(*), MIN(vlm_content), MAX(vlm_content), MIN(vlm_version), MAX(vlm_version)
+            FROM file_cache
+            WHERE file_path = ? AND file_hash = ?
+            """,
+            (str(file_path), "hash-4"),
+        )
+        row = cursor.fetchone()
+
+    assert row is not None
+    assert row[0] == 1
+    assert row[1] == "vlm-v2"
+    assert row[2] == "vlm-v2"
+    assert row[3] == 2
+    assert row[4] == 2
+
+
+def test_cache_enforces_size_limit(tmp_path: Path) -> None:
+    db_path = tmp_path / "cache.db"
+    max_size_gb = 0.00005  # ~52KB
+    cache = FileCache(db_path=db_path, max_size_gb=max_size_gb)
+
+    for i in range(120):
+        file_path = tmp_path / f"doc_{i}.txt"
+        file_path.write_text("dummy", encoding="utf-8")
+        cache.save(
+            file_path=file_path,
+            file_hash=f"hash-{i}",
+            file_mtime=file_path.stat().st_mtime,
+            content_md="x" * 2048,
+            model_version="embed-v1",
+        )
+
+    stats = cache.get_stats()
+    cache.close()
+
+    assert stats["total_entries"] < 120
+    assert db_path.stat().st_size <= int(max_size_gb * 1024 * 1024 * 1024 * 1.2)
+
+
+def test_get_embedding_misses_when_model_version_changes(tmp_path: Path) -> None:
+    db_path = tmp_path / "cache.db"
+    file_path = tmp_path / "doc.txt"
+    file_path.write_text("dummy", encoding="utf-8")
+
+    cache = FileCache(db_path=db_path)
+    cache.save(
+        file_path=file_path,
+        file_hash="hash-model",
+        file_mtime=file_path.stat().st_mtime,
+        content_md="docling content",
+        embedding=np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        model_version="embed-v1",
+    )
+
+    assert cache.get_embedding(
+        file_path,
+        "hash-model",
+        required_model_version="embed-v1",
+    ) is not None
+    assert (
+        cache.get_embedding(
+            file_path,
+            "hash-model",
+            required_model_version="embed-v2",
+        )
+        is None
+    )
+    cache.close()

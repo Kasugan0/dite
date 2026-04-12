@@ -1,0 +1,34 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+
+# Ruff
+.ruff_cache/
+
+# Virtual environments
+.venv
+
+# AI
+ref/
+.claude/
+.serena/
+.codex/
+AGENTS.md
+
+# Docs
+docs/
+doc.old/
+
+# DITE config
+dite.yaml
+.env
+
+# DITE cache and output
+.cache/
+report.json
+*.log

@@ -1,0 +1,48 @@
+# DITE Configuration File Example
+# Use this content for ~/.config/dite/config.yaml
+
+# API Configuration (required)
+api:
+  base_url: https://api.example.com/v1
+  api_key: your-api-key
+
+# Model Configuration (Qwen3 series recommended)
+models:
+  embedding: Qwen/Qwen3-Embedding-8B   # Embedding model
+  vlm: Qwen/Qwen3-VL-32B-Instruct      # Vision-Language model
+  llm: Qwen/Qwen3-32B                  # Text generation model
+
+# Request Profiles (task-specific)
+request_profiles:
+  cluster_naming:
+    max_tokens: 50
+    reasoning_mode: "off"              # default / off / on
+    thinking_budget: null
+
+# Clustering Parameters
+clustering:
+  min_cluster_size: 2                  # Minimum cluster size
+  min_samples: 1                       # Minimum samples for core points
+  cluster_selection_epsilon: 0.0       # Cluster selection threshold
+  cluster_selection_method: eom        # eom=larger clusters, leaf=fine-grained
+
+# Processing Parameters
+processing:
+  text_truncate_limit: 4000            # Text truncation limit (chars)
+  vlm_fallback_threshold: 100          # VLM fallback threshold
+  docling_pdf_timeout_sec: 60          # Max seconds per Docling PDF extraction
+
+# Internationalization
+i18n:
+  locale: en                           # en (default) or zh-CN
+
+# Cache Configuration (optional)
+# cache:
+#   enabled: true
+#   directory: ~/.cache/dite
+#   max_size_gb: 5
+
+# Supported File Formats (optional)
+# formats:
+#   documents: [.pdf, .docx, .doc, .pptx, .ppt, .xlsx, .xls, .md, .markdown, .txt, .rtf]
+#   images: [.jpg, .jpeg, .png, .webp, .gif]

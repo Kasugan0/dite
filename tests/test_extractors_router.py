@@ -1,0 +1,468 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from dite.config import Config
+from dite.extractors.base import BaseExtractor, ExtractionResult
+from dite.extractors.router import (
+    ExtractorRegistry,
+    _compute_effective_content_length,
+    _content_quality_score,
+    _count_pdf_glyph_noise_tokens,
+    _detect_real_type,
+    _should_prefer_vlm_content,
+    classify_pdf_profile,
+    extract_content,
+    extract_document,
+    get_extractor,
+    needs_vlm_fallback,
+)
+from dite.extractors.text import TextExtractor
+from dite.extractors.vlm import VLMExtractor
+from dite.i18n import set_locale
+
+
+class _StubExtractor(BaseExtractor):
+    def __init__(
+        self,
+        name: str,
+        extensions: set[str],
+        result: ExtractionResult | None = None,
+    ) -> None:
+        self.name = name
+        self._extensions = extensions
+        self._result = result or ExtractionResult(
+            content=f"{name}-content",
+            success=True,
+            extractor=name,
+        )
+
+    @property
+    def supported_extensions(self) -> set[str]:
+        return self._extensions
+
+    def extract(self, file_path: Path) -> ExtractionResult:
+        return self._result
+
+
+class _Registry:
+    def __init__(self) -> None:
+        self.docling = _StubExtractor("docling", {".pdf", ".docx", ".pptx"})
+        self.markitdown = _StubExtractor("markitdown", {".doc", ".ppt", ".xls"})
+        self.text = _StubExtractor("text", {".txt", ".md"})
+        self.vlm = _StubExtractor("vlm", {".png", ".jpg"})
+
+    def get_docling(self) -> BaseExtractor:
+        return self.docling
+
+    def get_markitdown(self) -> BaseExtractor:
+        return self.markitdown
+
+    def get_text(self) -> BaseExtractor:
+        return self.text
+
+    def get_vlm(self, client=None) -> BaseExtractor:
+        return self.vlm
+
+
+class _FakeCompletions:
+    def __init__(self, content: str, calls: list[dict]) -> None:
+        self._content = content
+        self._calls = calls
+
+    def create(self, **kwargs):
+        self._calls.append(kwargs)
+
+        class _Message:
+            def __init__(self, content: str) -> None:
+                self.content = content
+
+        class _Choice:
+            def __init__(self, content: str) -> None:
+                self.message = _Message(content)
+
+        class _Response:
+            def __init__(self, content: str) -> None:
+                self.choices = [_Choice(content)]
+
+        return _Response(self._content)
+
+
+class _FakeClient:
+    def __init__(self, content: str, calls: list[dict]) -> None:
+        class _Chat:
+            def __init__(self, content: str, calls: list[dict]) -> None:
+                self.completions = _FakeCompletions(content, calls)
+
+        self.chat = _Chat(content, calls)
+
+
+def test_detect_real_type_recognizes_magic_headers(tmp_path: Path) -> None:
+    cases = {
+        "sample.docx": b"PK\x03\x04extra",
+        "sample.doc": b"\xd0\xcf\x11\xe0rest",
+        "sample.pdf": b"%PDF-1.7",
+        "sample.bin": b"ABCDEFGH",
+    }
+
+    expected = {
+        "sample.docx": "ooxml",
+        "sample.doc": "ole",
+        "sample.pdf": "pdf",
+        "sample.bin": "unknown",
+    }
+
+    for name, header in cases.items():
+        file_path = tmp_path / name
+        file_path.write_bytes(header)
+        assert _detect_real_type(file_path) == expected[name]
+
+
+def test_get_extractor_routes_by_real_type_and_extension(
+    tmp_path: Path, monkeypatch
+) -> None:
+    registry = _Registry()
+
+    image = tmp_path / "image.png"
+    image.write_bytes(b"img")
+    assert get_extractor(image, registry=registry) is registry.vlm
+
+    text = tmp_path / "notes.txt"
+    text.write_text("hello", encoding="utf-8")
+    assert get_extractor(text, registry=registry) is registry.text
+
+    wrong_suffix_ooxml = tmp_path / "slides.ppt"
+    wrong_suffix_ooxml.write_bytes(b"PK\x03\x04fake")
+    assert get_extractor(wrong_suffix_ooxml, registry=registry) is registry.docling
+
+    old_office = tmp_path / "legacy.docx"
+    old_office.write_bytes(b"\xd0\xcf\x11\xe0fake")
+    assert get_extractor(old_office, registry=registry) is registry.markitdown
+
+    pdf = tmp_path / "paper.bin"
+    pdf.write_bytes(b"%PDF-1.7")
+    assert get_extractor(pdf, registry=registry) is registry.docling
+
+    unknown = tmp_path / "archive.xyz"
+    unknown.write_bytes(b"1234")
+    monkeypatch.setattr(
+        "dite.extractors.router._detect_real_type",
+        lambda path: "unknown",
+    )
+    assert get_extractor(unknown, registry=registry) is None
+
+
+def test_extract_document_returns_failure_for_unsupported_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    config_path = tmp_path / ".config" / "dite" / "config.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("i18n:\n  locale: zh-CN\n", encoding="utf-8")
+
+    file_path = tmp_path / "unsupported.xyz"
+    file_path.write_text("payload", encoding="utf-8")
+
+    result = extract_document(file_path, registry=_Registry())
+
+    assert result.success is False
+    assert result.extractor == "none"
+    assert "不支持的文件格式" in (result.error or "")
+
+
+def test_extract_document_error_follows_passed_config_locale(tmp_path: Path) -> None:
+    file_path = tmp_path / "unsupported.xyz"
+    file_path.write_text("payload", encoding="utf-8")
+    cfg = Config()
+    cfg.i18n.locale = "en"
+
+    result = extract_document(file_path, registry=_Registry(), config=cfg)
+
+    assert result.success is False
+    assert result.extractor == "none"
+    assert result.error == "Unsupported file format: .xyz"
+
+
+def test_extractor_registry_passes_docling_pdf_timeout() -> None:
+    cfg = Config()
+    cfg.processing.docling_pdf_timeout_sec = 12.5
+
+    extractor = ExtractorRegistry(cfg).get_docling()
+
+    assert extractor._pdf_timeout_sec == 12.5
+
+
+def test_needs_vlm_fallback_only_for_short_pdf() -> None:
+    cfg = Config()
+    cfg.processing.vlm_fallback_threshold = 20
+
+    assert needs_vlm_fallback("short text", Path("scan.pdf"), config=cfg) is True
+    assert needs_vlm_fallback("x" * 50, Path("scan.pdf"), config=cfg) is False
+    assert needs_vlm_fallback("short text", Path("scan.txt"), config=cfg) is False
+
+
+def test_effective_content_length_ignores_pdf_glyph_noise() -> None:
+    content = "/G25/G26/G27/G28 /G21/G22\n真正内容"
+
+    assert _compute_effective_content_length(content) == len("真正内容")
+    assert _content_quality_score(content) == len("真正内容")
+    assert _count_pdf_glyph_noise_tokens(content) == 6
+
+
+def test_should_prefer_vlm_content_uses_quality_not_raw_length() -> None:
+    noisy_doc = "/G25/G26/G27/G28 " * 40 + ("A" * 147)
+    vlm_content = "这是 VLM 提取出的正常文本。" * 20
+
+    assert _should_prefer_vlm_content(noisy_doc, vlm_content) is True
+
+
+def test_needs_vlm_fallback_for_pdf_glyph_noise() -> None:
+    cfg = Config()
+    cfg.processing.vlm_fallback_threshold = 20
+    noisy = "/G25/G26/G27/G28 " * 50 + "题目"
+
+    assert needs_vlm_fallback(noisy, Path("scan.pdf"), config=cfg) is True
+
+
+def test_needs_vlm_fallback_when_glyph_noise_dominates_long_content() -> None:
+    cfg = Config()
+    cfg.processing.vlm_fallback_threshold = 100
+    noisy = "/G25/G26/G27/G28 " * 40 + ("A" * 147)
+
+    assert needs_vlm_fallback(noisy, Path("scan.pdf"), config=cfg) is True
+
+
+def test_classify_pdf_profile_for_native_text() -> None:
+    profile = classify_pdf_profile(
+        "This is a readable PDF text layer." * 10,
+        Path("paper.pdf"),
+        success=True,
+        vlm_fallback_threshold=100,
+    )
+
+    assert profile is not None
+    assert profile.kind == "native_text"
+    assert profile.needs_vlm_fallback is False
+    assert profile.reason == "usable_text_layer"
+
+
+def test_classify_pdf_profile_for_scanned_image() -> None:
+    profile = classify_pdf_profile(
+        "",
+        Path("scan.pdf"),
+        success=True,
+        vlm_fallback_threshold=100,
+    )
+
+    assert profile is not None
+    assert profile.kind == "scanned_image"
+    assert profile.needs_vlm_fallback is True
+    assert profile.reason == "no_effective_text"
+
+
+def test_classify_pdf_profile_for_weak_glyph_noise() -> None:
+    profile = classify_pdf_profile(
+        "/G25/G26/G27/G28 " * 20 + "题目",
+        Path("noisy.pdf"),
+        success=True,
+        vlm_fallback_threshold=20,
+    )
+
+    assert profile is not None
+    assert profile.kind == "weak_text"
+    assert profile.needs_vlm_fallback is True
+    assert profile.reason == "glyph_noise_dominates"
+
+
+def test_classify_pdf_profile_for_mixed_pdf() -> None:
+    profile = classify_pdf_profile(
+        ("正常正文内容" * 80) + " /G25/G26",
+        Path("mixed.pdf"),
+        success=True,
+        vlm_fallback_threshold=100,
+    )
+
+    assert profile is not None
+    assert profile.kind == "mixed_pdf"
+    assert profile.needs_vlm_fallback is False
+    assert profile.reason == "text_with_glyph_noise"
+
+
+def test_classify_pdf_profile_for_parser_failure() -> None:
+    profile = classify_pdf_profile(
+        "",
+        Path("broken.pdf"),
+        success=False,
+        error="timeout>60s",
+        vlm_fallback_threshold=100,
+    )
+
+    assert profile is not None
+    assert profile.kind == "parser_timeout_or_broken"
+    assert profile.needs_vlm_fallback is True
+    assert profile.reason == "timeout>60s"
+
+
+def test_extract_content_uses_vlm_fallback_when_better(
+    tmp_path: Path, monkeypatch
+) -> None:
+    file_path = tmp_path / "scan.pdf"
+    file_path.write_bytes(b"%PDF-1.7")
+    cfg = Config()
+    cfg.processing.vlm_fallback_threshold = 50
+    cfg.processing.text_truncate_limit = 100
+    registry = _Registry()
+    registry.docling = _StubExtractor(
+        "docling",
+        {".pdf"},
+        ExtractionResult(content="too short", success=True, extractor="docling"),
+    )
+
+    monkeypatch.setattr(
+        "dite.extractors.router._extract_pdf_first_page_with_vlm",
+        lambda file_path, client, config: ExtractionResult(
+            content="much better vlm content",
+            success=True,
+            extractor="vlm_fallback",
+        ),
+    )
+
+    result = extract_content(
+        file_path,
+        client=object(),
+        config=cfg,
+        registry=registry,
+    )
+
+    assert result == "much better vlm content"
+
+
+def test_extract_content_keeps_original_when_vlm_not_better(
+    tmp_path: Path, monkeypatch
+) -> None:
+    file_path = tmp_path / "scan.pdf"
+    file_path.write_bytes(b"%PDF-1.7")
+    cfg = Config()
+    cfg.processing.vlm_fallback_threshold = 50
+    cfg.processing.text_truncate_limit = 10
+    registry = _Registry()
+    registry.docling = _StubExtractor(
+        "docling",
+        {".pdf"},
+        ExtractionResult(
+            content="sufficient source",
+            success=True,
+            extractor="docling",
+        ),
+    )
+
+    monkeypatch.setattr(
+        "dite.extractors.router._extract_pdf_first_page_with_vlm",
+        lambda file_path, client, config: ExtractionResult(
+            content="tiny",
+            success=True,
+            extractor="vlm_fallback",
+        ),
+    )
+
+    result = extract_content(
+        file_path,
+        client=object(),
+        config=cfg,
+        registry=registry,
+    )
+
+    assert result == "sufficient"
+
+
+def test_extract_content_prefers_vlm_when_doc_is_long_glyph_noise(
+    tmp_path: Path, monkeypatch
+) -> None:
+    file_path = tmp_path / "scan.pdf"
+    file_path.write_bytes(b"%PDF-1.7")
+    cfg = Config()
+    cfg.processing.vlm_fallback_threshold = 100
+    cfg.processing.text_truncate_limit = 5000
+    registry = _Registry()
+    registry.docling = _StubExtractor(
+        "docling",
+        {".pdf"},
+        ExtractionResult(
+            content=("/G25/G26/G27/G28 " * 40) + ("A" * 147),
+            success=True,
+            extractor="docling",
+        ),
+    )
+
+    monkeypatch.setattr(
+        "dite.extractors.router._extract_pdf_first_page_with_vlm",
+        lambda file_path, client, config: ExtractionResult(
+            content="这是 VLM 提取出的正常文本。" * 20,
+            success=True,
+            extractor="vlm_fallback",
+        ),
+    )
+
+    result = extract_content(
+        file_path,
+        client=object(),
+        config=cfg,
+        registry=registry,
+    )
+
+    assert result.startswith("这是 VLM 提取出的正常文本")
+
+
+def test_text_extractor_reads_text_and_reports_missing_file(tmp_path: Path) -> None:
+    extractor = TextExtractor()
+    file_path = tmp_path / "notes.txt"
+    file_path.write_text("plain text", encoding="utf-8")
+
+    success = extractor.extract(file_path)
+    failure = extractor.extract(tmp_path / "missing.txt")
+
+    assert success.success is True
+    assert success.content == "plain text"
+    assert failure.success is False
+    assert failure.error
+
+
+def test_vlm_extractor_handles_missing_client_and_success(tmp_path: Path) -> None:
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(b"not-really-a-png")
+
+    cfg = Config()
+    cfg.i18n.locale = "en"
+    no_client = VLMExtractor(cfg, client=None).extract(image_path)
+    assert no_client.success is False
+    assert no_client.error == "VLM client is not initialized"
+
+    calls: list[dict] = []
+    extractor = VLMExtractor(cfg, client=_FakeClient("image summary", calls))
+    result = extractor.extract(image_path)
+
+    assert result.success is True
+    assert result.content == "image summary"
+    assert calls
+    assert calls[0]["model"] == Config().models.vlm
+    message = calls[0]["messages"][0]["content"][0]["image_url"]["url"]
+    assert message.startswith("data:image/png;base64,")
+    prompt = calls[0]["messages"][0]["content"][1]["text"]
+    assert "Describe this image in detail." in prompt
+
+
+def test_vlm_extractor_uses_zh_prompt_when_locale_is_zh(tmp_path: Path) -> None:
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(b"not-really-a-png")
+
+    cfg = Config()
+    cfg.i18n.locale = "zh-CN"
+    set_locale("en")
+
+    calls: list[dict] = []
+    extractor = VLMExtractor(cfg, client=_FakeClient("图像摘要", calls))
+    result = extractor.extract(image_path)
+
+    assert result.success is True
+    prompt = calls[0]["messages"][0]["content"][1]["text"]
+    assert "请详细描述这张图片的内容。" in prompt
