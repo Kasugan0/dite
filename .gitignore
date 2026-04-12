@@ -18,6 +18,7 @@ ref/
 .claude/
 .serena/
 .codex/
+.codex
 AGENTS.md
 
 # Docs
