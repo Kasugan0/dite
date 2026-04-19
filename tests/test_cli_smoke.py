@@ -9,7 +9,8 @@ from dite.cache import FileCache
 from dite.cli import app
 from dite.core.embedder import get_embedding_cache_version
 from dite.core.organizer import OrganizePreview
-from dite.core.pipeline import PipelineResult
+from dite.core.pipeline import ExtractionFileReport, ExtractionSummary, PipelineResult
+from dite.utils.logging import setup_logging
 
 
 def _write_test_config(tmp_path: Path, monkeypatch, locale: str = "en") -> Path:
@@ -97,6 +98,188 @@ def test_dite_pdf_check_uses_pdf_only_and_stops_before_pipeline_scan(
         "allow_vlm_api": True,
     }
     assert "passed the smoke check" in result.output
+
+
+def test_dite_pdf_check_reports_summary_note_and_verbose_details(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runner = CliRunner()
+    _write_test_config(tmp_path, monkeypatch)
+    setup_logging()
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    pdf = docs / "doc.pdf"
+    pdf.write_text("pdf", encoding="utf-8")
+
+    class FakePipelineService:
+        def __init__(self, client, config=None, cache=None):
+            del client, config, cache
+
+        def extract_files(self, files, options):
+            del options
+            return PipelineResult(
+                files=files,
+                contents=["usable PDF content" * 20],
+                embeddings=np.array([]),
+                labels=np.array([]),
+                cluster_names={},
+                extraction=ExtractionSummary(
+                    doc_cache_hits=1,
+                    vlm_cache_hits=2,
+                    primary_failures=3,
+                    source_fallback_needed=4,
+                    selected_vlm_files=5,
+                    vlm_api_page_calls=6,
+                    duplicate_count=7,
+                ),
+                file_reports=[
+                    ExtractionFileReport(
+                        file=files[0],
+                        primary_extractor="docling",
+                        primary_success=False,
+                        primary_error="broken",
+                        source_profile="parser_timeout_or_broken",
+                        source_effective_length=0,
+                        selected_source="vlm_api",
+                        final_effective_length=2500,
+                        excerpt_was_truncated=False,
+                        vlm_api_page_calls=6,
+                        sample_page_limit=10,
+                        file_hash="hash-1",
+                    )
+                ],
+            )
+
+    monkeypatch.setattr("dite.cli.PipelineService", FakePipelineService)
+
+    result = runner.invoke(app, ["pdf-check", str(docs), "--verbose"])
+
+    assert result.exit_code == 0
+    assert "PDF smoke check completed" in result.output
+    assert "doc cache: 1" in result.output
+    assert "VLM cache: 2" in result.output
+    assert "primary failures: 3" in result.output
+    assert "fallback needed: 4" in result.output
+    assert "selected VLM: 5" in result.output
+    assert "VLM page calls: 6" in result.output
+    assert "duplicates: 7" in result.output
+    assert "weak: 0" in result.output
+    assert "empty: 0" in result.output
+    assert "VLM samples only the first 10 pages." in result.output
+    assert "Extraction details" in result.output
+    assert "File" in result.output
+    assert "docling" in result.output
+    assert "Primary" in result.output
+    assert "parser failed" in result.output
+    assert "Selected" in result.output
+    assert "Effective" in result.output
+    assert "VLM sampling" in result.output
+
+
+def test_dite_pdf_check_fails_when_final_output_is_below_threshold(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runner = CliRunner()
+    _write_test_config(tmp_path, monkeypatch)
+    setup_logging()
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    pdf = docs / "doc.pdf"
+    pdf.write_text("pdf", encoding="utf-8")
+
+    class FakePipelineService:
+        def __init__(self, client, config=None, cache=None):
+            del client, config, cache
+
+        def extract_files(self, files, options):
+            del options
+            return PipelineResult(
+                files=files,
+                contents=["usable PDF content" * 20],
+                embeddings=np.array([]),
+                labels=np.array([]),
+                cluster_names={},
+                extraction=ExtractionSummary(),
+                file_reports=[
+                    ExtractionFileReport(
+                        file=files[0],
+                        primary_extractor="docling",
+                        primary_success=True,
+                        primary_error=None,
+                        source_profile="native_text",
+                        source_effective_length=2500,
+                        selected_source="primary",
+                        final_effective_length=0,
+                        excerpt_was_truncated=False,
+                        vlm_api_page_calls=0,
+                        sample_page_limit=10,
+                        file_hash="hash-1",
+                    )
+                ],
+            )
+
+    monkeypatch.setattr("dite.cli.PipelineService", FakePipelineService)
+
+    result = runner.invoke(app, ["pdf-check", str(docs)])
+
+    assert result.exit_code == 1
+    assert "Weak final PDF outputs" in result.output
+    assert "below threshold" in result.output
+
+
+def test_dite_scan_reports_brief_summary_by_default_and_details_in_verbose(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runner = CliRunner()
+    _write_test_config(tmp_path, monkeypatch)
+    setup_logging()
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    pdf = docs / "doc.pdf"
+    pdf.write_text("pdf", encoding="utf-8")
+
+    fake_result = PipelineResult(
+        files=[pdf],
+        contents=["usable PDF content" * 20],
+        embeddings=np.array([[0.1, 0.2, 0.3]]),
+        labels=np.array([0]),
+        cluster_names={0: "Topic"},
+        extraction=ExtractionSummary(
+            doc_cache_hits=1,
+            vlm_cache_hits=2,
+            primary_failures=3,
+            source_fallback_needed=4,
+            selected_vlm_files=5,
+            vlm_api_page_calls=6,
+            duplicate_count=7,
+        ),
+    )
+
+    def fake_run_pipeline_or_exit(pipeline, folder, options, cache):
+        del pipeline, folder, options, cache
+        return fake_result
+
+    monkeypatch.setattr("dite.cli._run_pipeline_or_exit", fake_run_pipeline_or_exit)
+
+    result = runner.invoke(app, ["scan", str(docs)])
+
+    assert result.exit_code == 0
+    assert "Content extraction completed" in result.output
+    assert "Doc cache: 1" in result.output
+    assert "VLM cache: 2" in result.output
+    assert "Selected VLM: 5" in result.output
+    assert "Duplicates: 7" in result.output
+    assert "Extraction details:" not in result.output
+
+    setup_logging()
+    verbose_result = runner.invoke(app, ["scan", str(docs), "--verbose"])
+
+    assert verbose_result.exit_code == 0
+    assert "Content extraction completed" in verbose_result.output
+    assert "DEBUG: Extraction details:" in verbose_result.output
+    assert "primary_failures=3" in verbose_result.output
+    assert "fallback_needed=4" in verbose_result.output
+    assert "vlm_page_calls=6" in verbose_result.output
 
 
 def test_dite_organize_help(tmp_path: Path, monkeypatch) -> None:
