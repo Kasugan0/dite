@@ -240,3 +240,37 @@ def test_get_embedding_misses_when_model_version_changes(tmp_path: Path) -> None
         is None
     )
     cache.close()
+
+
+def test_get_stats_counts_current_and_stale_embeddings(tmp_path: Path) -> None:
+    db_path = tmp_path / "cache.db"
+    current = tmp_path / "current.txt"
+    stale = tmp_path / "stale.txt"
+    current.write_text("current", encoding="utf-8")
+    stale.write_text("stale", encoding="utf-8")
+
+    cache = FileCache(db_path=db_path)
+    cache.save(
+        file_path=current,
+        file_hash="hash-current",
+        file_mtime=current.stat().st_mtime,
+        content_md="current content",
+        embedding=np.array([1.0, 2.0], dtype=np.float32),
+        model_version="embed-v1|input=current",
+    )
+    cache.save(
+        file_path=stale,
+        file_hash="hash-stale",
+        file_mtime=stale.stat().st_mtime,
+        content_md="stale content",
+        embedding=np.array([3.0, 4.0], dtype=np.float32),
+        model_version="embed-v1",
+    )
+
+    stats = cache.get_stats(required_embedding_version="embed-v1|input=current")
+
+    assert stats["with_embedding"] == 2
+    assert stats["current_embeddings"] == 1
+    assert stats["stale_embeddings"] == 1
+    assert stats["current_embedding_version"] == "embed-v1|input=current"
+    cache.close()

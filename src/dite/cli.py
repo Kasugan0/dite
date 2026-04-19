@@ -43,6 +43,7 @@ from dite import __version__  # noqa: E402
 from dite.cache import FileCache  # noqa: E402
 from dite.config import Config, load_config  # noqa: E402
 from dite.core.clusterer import _build_cluster_debug_labels  # noqa: E402
+from dite.core.embedder import get_embedding_cache_version  # noqa: E402
 from dite.core.organizer import OrganizePreview  # noqa: E402
 from dite.core.pipeline import (  # noqa: E402
     PipelineOptions,
@@ -735,13 +736,24 @@ def cache_status(ctx: typer.Context):
         max_size_gb=config.cache.max_size_gb,
     )
 
-    stats = cache.get_stats()
+    embedding_cache_version = get_embedding_cache_version(config.models.embedding)
+    stats = cache.get_stats(required_embedding_version=embedding_cache_version)
     cache.close()
 
     logger.print(f"[bold]{t('cache_status_title')}[/bold]\n")
     logger.print(f"[bold]{t('cache_db_path')}[/bold] {stats['db_path']}")
     logger.print(f"[bold]{t('cache_total_entries')}[/bold] {stats['total_entries']}")
     logger.print(f"[bold]{t('cache_with_embedding')}[/bold] {stats['with_embedding']}")
+    logger.print(
+        f"[bold]{t('cache_current_embedding')}[/bold] {stats['current_embeddings']}"
+    )
+    logger.print(
+        f"[bold]{t('cache_stale_embedding')}[/bold] {stats['stale_embeddings']}"
+    )
+    logger.print(
+        f"[bold]{t('cache_embedding_version')}[/bold] "
+        f"{stats['current_embedding_version']}"
+    )
     logger.print(f"[bold]{t('cache_with_vlm')}[/bold] {stats['with_vlm']}")
     logger.print(f"[bold]{t('cache_vlm_version')}[/bold] v{stats['vlm_cache_version']}")
     logger.print(f"[bold]{t('cache_unique_hashes')}[/bold] {stats['unique_hashes']}")

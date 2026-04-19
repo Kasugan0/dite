@@ -5,7 +5,9 @@ from pathlib import Path
 import numpy as np
 from typer.testing import CliRunner
 
+from dite.cache import FileCache
 from dite.cli import app
+from dite.core.embedder import get_embedding_cache_version
 from dite.core.organizer import OrganizePreview
 from dite.core.pipeline import PipelineResult
 
@@ -110,6 +112,36 @@ def test_dite_cache_status(tmp_path: Path, monkeypatch) -> None:
 
     result = runner.invoke(app, ["cache", "status"])
     assert result.exit_code == 0
+    assert "Current embedding:" in result.output
+    assert "Stale embedding:" in result.output
+
+
+def test_dite_cache_status_reports_stale_embeddings(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runner = CliRunner()
+    _write_test_config(tmp_path, monkeypatch)
+    cache_path = tmp_path / "cache" / "cache.db"
+    doc = tmp_path / "doc.txt"
+    doc.write_text("payload", encoding="utf-8")
+    cache = FileCache(db_path=cache_path)
+    cache.save(
+        file_path=doc,
+        file_hash="hash-old",
+        file_mtime=doc.stat().st_mtime,
+        content_md="payload",
+        embedding=np.array([1.0, 2.0], dtype=np.float32),
+        model_version="old-embedding-format",
+    )
+    cache.close()
+
+    result = runner.invoke(app, ["cache", "status"])
+
+    assert result.exit_code == 0
+    assert "With embedding: 1" in result.output
+    assert "Current embedding: 0" in result.output
+    assert "Stale embedding: 1" in result.output
+    assert get_embedding_cache_version("Qwen/Qwen3-Embedding-8B") in result.output
 
 
 def test_dite_setup_help(tmp_path: Path, monkeypatch) -> None:

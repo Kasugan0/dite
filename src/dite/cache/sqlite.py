@@ -482,7 +482,7 @@ class FileCache:
 
         return count
 
-    def get_stats(self) -> dict[str, Any]:
+    def get_stats(self, required_embedding_version: str | None = None) -> dict[str, Any]:
         """
         获取缓存统计信息
 
@@ -499,6 +499,20 @@ class FileCache:
         )
         with_embedding = cursor.fetchone()[0]
 
+        if required_embedding_version is None:
+            current_embeddings = with_embedding
+            stale_embeddings = 0
+        else:
+            cursor = conn.execute(
+                """
+                SELECT COUNT(*) FROM file_cache
+                WHERE embedding IS NOT NULL AND model_version = ?
+                """,
+                (required_embedding_version,),
+            )
+            current_embeddings = cursor.fetchone()[0]
+            stale_embeddings = with_embedding - current_embeddings
+
         cursor = conn.execute(
             "SELECT COUNT(*) FROM file_cache WHERE vlm_content IS NOT NULL"
         )
@@ -513,6 +527,9 @@ class FileCache:
         return {
             "total_entries": total_entries,
             "with_embedding": with_embedding,
+            "current_embeddings": current_embeddings,
+            "stale_embeddings": stale_embeddings,
+            "current_embedding_version": required_embedding_version or "-",
             "with_vlm": with_vlm,
             "unique_hashes": unique_hashes,
             "db_size_mb": db_size / (1024 * 1024),

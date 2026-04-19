@@ -102,6 +102,9 @@ class Messages:
     cache_db_path: str
     cache_total_entries: str
     cache_with_embedding: str
+    cache_current_embedding: str
+    cache_stale_embedding: str
+    cache_embedding_version: str
     cache_with_vlm: str
     cache_vlm_version: str
     cache_unique_hashes: str
@@ -323,6 +326,9 @@ ZH_CN = Messages(
     cache_db_path="数据库路径:",
     cache_total_entries="总条目数:",
     cache_with_embedding="含 Embedding:",
+    cache_current_embedding="当前 Embedding:",
+    cache_stale_embedding="过期 Embedding:",
+    cache_embedding_version="当前 Embedding 缓存版本:",
     cache_with_vlm="含 VLM 回退:",
     cache_vlm_version="VLM 缓存版本:",
     cache_unique_hashes="唯一哈希数:",
@@ -573,6 +579,9 @@ EN = Messages(
     cache_db_path="Database path:",
     cache_total_entries="Total entries:",
     cache_with_embedding="With embedding:",
+    cache_current_embedding="Current embedding:",
+    cache_stale_embedding="Stale embedding:",
+    cache_embedding_version="Current embedding cache version:",
     cache_with_vlm="With VLM fallback:",
     cache_vlm_version="VLM cache version:",
     cache_unique_hashes="Unique hashes:",
