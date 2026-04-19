@@ -61,6 +61,9 @@ uv run dite --install-completion
 # 扫描目标目录并生成观测报告
 uv run dite scan ./my_documents --output report.json
 
+# 快速检查 PDF 最终提取结果是否足够可用
+uv run dite pdf-check ./my_documents
+
 # 预览重构结果（不产生物理变更）
 uv run dite organize ./my_documents --dry-run
 
@@ -122,6 +125,27 @@ dite organize <folder> [--target <output>] [--dry-run|--execute|--output-script]
 | `--verbose`, `-v` | 详细输出                              |
 | `--quiet`, `-q`   | 静默模式                              |
 | `--color`         | 强制启用颜色输出                      |
+
+### `dite pdf-check`
+
+快速检查 PDF 的最终提取结果是否足够可用，不做 embedding、聚类和命名。
+
+```bash
+dite pdf-check <folder> [--no-cache] [--cached-vlm-only] [-v] [-q]
+```
+
+| 参数                | 描述                               |
+| ------------------- | ---------------------------------- |
+| `--no-cache`        | 禁用缓存，重新执行本次提取         |
+| `--cached-vlm-only` | 只允许使用已有 VLM 缓存，不调用 API |
+| `--verbose`, `-v`   | 显示逐文件提取细节                 |
+| `--quiet`, `-q`     | 静默模式                           |
+
+说明：
+
+- 这是快速可用性检查，不是全文完整性审计。
+- 如果 PDF 触发 VLM 回退，只会采样前 10 页。
+- 通过检查只表示最终提取结果超过可用阈值，不代表整本文档已经完整提取。
 
 ## ⚙️ 配置
 

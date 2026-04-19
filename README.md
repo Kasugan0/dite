@@ -61,6 +61,9 @@ uv run dite --install-completion
 # [Scan Mode] Scan target sector and generate observation report
 uv run dite scan ./my_documents --output report.json
 
+# [Smoke Check] Verify whether final PDF extraction output is usable enough
+uv run dite pdf-check ./my_documents
+
 # [Simulation] Preview reorganization results (no physical changes)
 uv run dite organize ./my_documents --dry-run
 
@@ -122,6 +125,29 @@ dite organize <folder> [--target <output>] [--dry-run|--execute|--output-script]
 | `--verbose`, `-v` | Verbose output |
 | `--quiet`, `-q` | Quiet mode |
 | `--color` | Force enable color output |
+
+### `dite pdf-check`
+
+Quickly check whether final PDF extraction outputs are usable enough, without
+running embedding, clustering, or naming.
+
+```bash
+dite pdf-check <folder> [--no-cache] [--cached-vlm-only] [-v] [-q]
+```
+
+| Parameter | Description |
+| --- | --- |
+| `--no-cache` | Disable cache and rerun extraction |
+| `--cached-vlm-only` | Use only existing VLM cache, never call the API |
+| `--verbose`, `-v` | Show per-file extraction details |
+| `--quiet`, `-q` | Quiet mode |
+
+Notes:
+
+- This is a smoke check, not a full-document completeness audit.
+- When PDF fallback uses VLM, it samples only the first 10 pages.
+- A passing result means the final extracted output cleared the usability
+  threshold, not that the whole document was extracted completely.
 
 ## ⚙️ Configuration
 
