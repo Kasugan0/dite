@@ -5,7 +5,9 @@ from pathlib import Path
 from dite.config import Config
 from dite.extractors.base import BaseExtractor, ExtractionResult
 from dite.extractors.router import (
+    PDF_VLM_SAMPLE_PAGE_LIMIT,
     ExtractorRegistry,
+    VLMSamplingResult,
     _compute_effective_content_length,
     _content_quality_score,
     _count_pdf_glyph_noise_tokens,
@@ -16,6 +18,7 @@ from dite.extractors.router import (
     extract_document,
     get_extractor,
     needs_vlm_fallback,
+    resolve_document_extraction,
 )
 from dite.extractors.text import TextExtractor
 from dite.extractors.vlm import VLMExtractor
@@ -319,11 +322,15 @@ def test_extract_content_uses_vlm_fallback_when_better(
     )
 
     monkeypatch.setattr(
-        "dite.extractors.router._extract_pdf_first_page_with_vlm",
-        lambda file_path, client, config: ExtractionResult(
-            content="much better vlm content",
-            success=True,
-            extractor="vlm_fallback",
+        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        lambda file_path, client, config: VLMSamplingResult(
+            result=ExtractionResult(
+                content="much better vlm content",
+                success=True,
+                extractor="vlm_fallback",
+            ),
+            api_page_calls=2,
+            sample_page_limit=PDF_VLM_SAMPLE_PAGE_LIMIT,
         ),
     )
 
@@ -357,11 +364,15 @@ def test_extract_content_keeps_original_when_vlm_not_better(
     )
 
     monkeypatch.setattr(
-        "dite.extractors.router._extract_pdf_first_page_with_vlm",
-        lambda file_path, client, config: ExtractionResult(
-            content="tiny",
-            success=True,
-            extractor="vlm_fallback",
+        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        lambda file_path, client, config: VLMSamplingResult(
+            result=ExtractionResult(
+                content="tiny",
+                success=True,
+                extractor="vlm_fallback",
+            ),
+            api_page_calls=1,
+            sample_page_limit=PDF_VLM_SAMPLE_PAGE_LIMIT,
         ),
     )
 
@@ -395,11 +406,15 @@ def test_extract_content_prefers_vlm_when_doc_is_long_glyph_noise(
     )
 
     monkeypatch.setattr(
-        "dite.extractors.router._extract_pdf_first_page_with_vlm",
-        lambda file_path, client, config: ExtractionResult(
-            content="这是 VLM 提取出的正常文本。" * 20,
-            success=True,
-            extractor="vlm_fallback",
+        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        lambda file_path, client, config: VLMSamplingResult(
+            result=ExtractionResult(
+                content="这是 VLM 提取出的正常文本。" * 20,
+                success=True,
+                extractor="vlm_fallback",
+            ),
+            api_page_calls=3,
+            sample_page_limit=PDF_VLM_SAMPLE_PAGE_LIMIT,
         ),
     )
 
@@ -411,6 +426,47 @@ def test_extract_content_prefers_vlm_when_doc_is_long_glyph_noise(
     )
 
     assert result.startswith("这是 VLM 提取出的正常文本")
+
+
+def test_resolve_document_extraction_reports_vlm_sampling_metrics(
+    tmp_path: Path, monkeypatch
+) -> None:
+    file_path = tmp_path / "scan.pdf"
+    file_path.write_bytes(b"%PDF-1.7")
+    cfg = Config()
+    cfg.processing.vlm_fallback_threshold = 50
+    registry = _Registry()
+    registry.docling = _StubExtractor(
+        "docling",
+        {".pdf"},
+        ExtractionResult(content="short text", success=True, extractor="docling"),
+    )
+
+    monkeypatch.setattr(
+        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        lambda file_path, client, config: VLMSamplingResult(
+            result=ExtractionResult(
+                content="much better vlm content",
+                success=True,
+                extractor="vlm_fallback",
+            ),
+            api_page_calls=4,
+            sample_page_limit=PDF_VLM_SAMPLE_PAGE_LIMIT,
+        ),
+    )
+
+    resolved = resolve_document_extraction(
+        file_path,
+        client=object(),
+        registry=registry,
+        config=cfg,
+    )
+
+    assert resolved.fallback_needed is True
+    assert resolved.selected_source == "vlm_api"
+    assert resolved.final_content == "much better vlm content"
+    assert resolved.vlm_api_page_calls == 4
+    assert resolved.sample_page_limit == PDF_VLM_SAMPLE_PAGE_LIMIT
 
 
 def test_text_extractor_reads_text_and_reports_missing_file(tmp_path: Path) -> None:

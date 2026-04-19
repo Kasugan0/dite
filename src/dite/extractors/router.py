@@ -25,6 +25,10 @@ PDFProfileKind = Literal[
     "mixed_pdf",
     "parser_timeout_or_broken",
 ]
+ResolvedSource = Literal["primary", "vlm_cache", "vlm_api"]
+VLMSource = Literal["none", "cache", "api"]
+
+PDF_VLM_SAMPLE_PAGE_LIMIT = 10
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,33 @@ class PDFProfile:
     needs_vlm_fallback: bool
     success: bool
     reason: str
+
+
+@dataclass(frozen=True)
+class VLMSamplingResult:
+    """VLM PDF sampling result plus runtime-only metrics."""
+
+    result: ExtractionResult
+    api_page_calls: int
+    sample_page_limit: int
+
+
+@dataclass(frozen=True)
+class ResolvedExtraction:
+    """Final extraction decision after optional PDF VLM fallback resolution."""
+
+    primary_result: ExtractionResult
+    primary_effective_length: int
+    pdf_profile: PDFProfile | None
+    fallback_needed: bool
+    selected_source: ResolvedSource
+    final_content: str
+    final_effective_length: int
+    vlm_content: str | None
+    vlm_source: VLMSource
+    vlm_api_success: bool
+    vlm_api_page_calls: int
+    sample_page_limit: int | None
 
 
 class ExtractorRegistry:
@@ -162,12 +193,12 @@ def _detect_real_type(file_path: Path) -> str:
         return "unknown"
 
 
-def _extract_pdf_first_page_with_vlm(
+def _extract_pdf_with_vlm_sampling(
     file_path: Path,
     client: OpenAI,
     config: Config,
-    max_pages: int = 10,
-) -> ExtractionResult:
+    max_pages: int = PDF_VLM_SAMPLE_PAGE_LIMIT,
+) -> VLMSamplingResult:
     """
     使用 VLM 处理 PDF 多页（用于扫描件回退）
 
@@ -185,11 +216,15 @@ def _extract_pdf_first_page_with_vlm(
         from pdf2image import convert_from_path
     except ImportError:
         logger.warning(t("warning_pdf2image_missing"))
-        return ExtractionResult(
-            content="",
-            success=False,
-            extractor="vlm_fallback",
-            error=t("warning_pdf2image_missing"),
+        return VLMSamplingResult(
+            result=ExtractionResult(
+                content="",
+                success=False,
+                extractor="vlm_fallback",
+                error=t("warning_pdf2image_missing"),
+            ),
+            api_page_calls=0,
+            sample_page_limit=max_pages,
         )
 
     try:
@@ -202,15 +237,20 @@ def _extract_pdf_first_page_with_vlm(
         )
 
         if not images:
-            return ExtractionResult(
-                content="",
-                success=False,
-                extractor="vlm_fallback",
-                error=t("error_pdf_render_failed"),
+            return VLMSamplingResult(
+                result=ExtractionResult(
+                    content="",
+                    success=False,
+                    extractor="vlm_fallback",
+                    error=t("error_pdf_render_failed"),
+                ),
+                api_page_calls=0,
+                sample_page_limit=max_pages,
             )
 
         # 收集所有页面的描述
         all_contents = []
+        api_page_calls = 0
 
         for page_num, image in enumerate(images, start=1):
             logger.debug(
@@ -275,6 +315,7 @@ def _extract_pdf_first_page_with_vlm(
 
                 # 调用 VLM（设置超时）
                 logger.debug(t("debug_vlm_api_call"))
+                api_page_calls += 1
                 response = client.chat.completions.create(
                     model=config.models.vlm,
                     messages=[
@@ -327,10 +368,14 @@ def _extract_pdf_first_page_with_vlm(
         # 合并所有页面内容
         combined_content = "\n\n".join(all_contents)
 
-        return ExtractionResult(
-            content=combined_content,
-            success=True,
-            extractor="vlm_fallback",
+        return VLMSamplingResult(
+            result=ExtractionResult(
+                content=combined_content,
+                success=True,
+                extractor="vlm_fallback",
+            ),
+            api_page_calls=api_page_calls,
+            sample_page_limit=max_pages,
         )
 
     except Exception as e:
@@ -338,11 +383,15 @@ def _extract_pdf_first_page_with_vlm(
         if len(error_msg) > 100:
             error_msg = error_msg[:100] + "..."
         logger.warning(t("warning_vlm_fallback_failed", error=error_msg))
-        return ExtractionResult(
-            content="",
-            success=False,
-            extractor="vlm_fallback",
-            error=error_msg,
+        return VLMSamplingResult(
+            result=ExtractionResult(
+                content="",
+                success=False,
+                extractor="vlm_fallback",
+                error=error_msg,
+            ),
+            api_page_calls=0,
+            sample_page_limit=max_pages,
         )
 
 
@@ -580,6 +629,150 @@ def extract_document(
     return extractor.extract(file_path)
 
 
+def resolve_document_extraction(
+    file_path: Path,
+    client: OpenAI | None = None,
+    *,
+    enable_vlm_fallback: bool = True,
+    allow_vlm_api: bool = True,
+    cached_vlm_content: str | None = None,
+    primary_result: ExtractionResult | None = None,
+    registry: ExtractorRegistry | None = None,
+    config: Config | None = None,
+) -> ResolvedExtraction:
+    """Resolve primary extraction, PDF fallback, and final content selection."""
+    logger = get_logger()
+    cfg = _resolve_config(config)
+
+    resolved_primary = primary_result
+    if resolved_primary is None:
+        resolved_primary = extract_document(
+            file_path,
+            client,
+            registry=registry,
+            config=cfg,
+        )
+        logger.debug(
+            t(
+                "debug_extract_doc_result",
+                extractor=resolved_primary.extractor,
+                success=resolved_primary.success,
+                length=len(resolved_primary.content if resolved_primary.success else ""),
+                error=resolved_primary.error or "-",
+            )
+        )
+
+    primary_content = resolved_primary.content if resolved_primary.success else ""
+    normalized_primary = ExtractionResult(
+        content=primary_content,
+        success=resolved_primary.success,
+        extractor=resolved_primary.extractor,
+        error=resolved_primary.error,
+    )
+    primary_effective_length = _compute_effective_content_length(primary_content)
+    pdf_profile = classify_pdf_profile(
+        primary_content,
+        file_path,
+        success=normalized_primary.success,
+        error=normalized_primary.error,
+        vlm_fallback_threshold=cfg.processing.vlm_fallback_threshold,
+        config=cfg,
+    )
+    fallback_needed = False
+    final_content = primary_content
+    final_effective_length = primary_effective_length
+    selected_source: ResolvedSource = "primary"
+    vlm_content = cached_vlm_content
+    vlm_source: VLMSource = "cache" if cached_vlm_content is not None else "none"
+    vlm_api_success = False
+    vlm_api_page_calls = 0
+    sample_page_limit = (
+        PDF_VLM_SAMPLE_PAGE_LIMIT if file_path.suffix.lower() == ".pdf" else None
+    )
+
+    if file_path.suffix.lower() == ".pdf":
+        fallback_needed = (
+            enable_vlm_fallback
+            and client is not None
+            and normalized_primary.extractor == "docling"
+            and pdf_profile is not None
+            and pdf_profile.needs_vlm_fallback
+        )
+        logger.debug(
+            t(
+                "debug_extract_vlm_check",
+                suffix=file_path.suffix.lower(),
+                effective_length=primary_effective_length,
+                threshold=cfg.processing.vlm_fallback_threshold,
+                needed=fallback_needed,
+            )
+        )
+        if pdf_profile is not None:
+            logger.debug(
+                t(
+                    "debug_pdf_profile",
+                    kind=pdf_profile.kind,
+                    reason=pdf_profile.reason,
+                    effective_length=pdf_profile.effective_length,
+                    glyph_noise_tokens=pdf_profile.glyph_noise_tokens,
+                    needs_vlm_fallback=pdf_profile.needs_vlm_fallback,
+                )
+            )
+
+        if fallback_needed and vlm_content is None and allow_vlm_api:
+            logger.debug(t("debug_extract_vlm_api_call"))
+            sampling = _extract_pdf_with_vlm_sampling(file_path, client, config=cfg)
+            vlm_result = sampling.result
+            vlm_api_page_calls = sampling.api_page_calls
+            logger.debug(
+                t(
+                    "debug_extract_vlm_result",
+                    success=vlm_result.success,
+                    length=len(vlm_result.content),
+                    error=vlm_result.error or "-",
+                )
+            )
+            if vlm_result.success:
+                vlm_content = vlm_result.content
+                vlm_source = "api"
+                vlm_api_success = True
+
+        if vlm_content and _should_prefer_vlm_content(primary_content, vlm_content):
+            final_content = vlm_content
+            final_effective_length = _content_quality_score(vlm_content)
+            selected_source = "vlm_cache" if vlm_source == "cache" else "vlm_api"
+            logger.debug(
+                t(
+                    "debug_extract_vlm_selected",
+                    vlm_length=final_effective_length,
+                    doc_length=primary_effective_length,
+                )
+            )
+        elif vlm_content:
+            logger.debug(
+                t(
+                    "debug_extract_vlm_skipped",
+                    doc_length=primary_effective_length,
+                    vlm_length=_content_quality_score(vlm_content),
+                )
+            )
+
+    return ResolvedExtraction(
+        primary_result=normalized_primary,
+        primary_effective_length=primary_effective_length,
+        pdf_profile=pdf_profile,
+        fallback_needed=fallback_needed,
+        selected_source=selected_source,
+        final_content=final_content,
+        final_effective_length=final_effective_length,
+        vlm_content=vlm_content,
+        vlm_source=vlm_source,
+        vlm_api_success=vlm_api_success,
+        vlm_api_page_calls=vlm_api_page_calls,
+        sample_page_limit=sample_page_limit,
+    )
+
+
 def needs_vlm_fallback(
     content: str,
     file_path: Path,
@@ -629,11 +822,7 @@ def extract_with_vlm_fallback(
         ExtractionResult
     """
     cfg = _resolve_config(config)
-    return _extract_pdf_first_page_with_vlm(
-        file_path,
-        client,
-        config=cfg,
-    )
+    return _extract_pdf_with_vlm_sampling(file_path, client, config=cfg).result
 
 
 def extract_content(
@@ -656,77 +845,17 @@ def extract_content(
     Returns:
         提取的文本内容
     """
-    logger = get_logger()
     cfg = _resolve_config(config)
 
     if truncate_limit is None:
         truncate_limit = cfg.processing.text_truncate_limit
 
-    extractor = get_extractor(
+    resolved = resolve_document_extraction(
         file_path,
         client,
+        enable_vlm_fallback=enable_vlm_fallback,
+        allow_vlm_api=True,
         registry=registry,
         config=cfg,
     )
-
-    if extractor is None:
-        logger.warning(t("warning_unsupported_file_format", suffix=file_path.suffix))
-        return ""
-
-    result = extractor.extract(file_path)
-
-    if not result.success:
-        logger.warning(
-            t(
-                "warning_extractor_failed",
-                extractor=extractor.name,
-                name=file_path.name,
-                error=result.error or "-",
-            )
-        )
-        return ""
-
-    # VLM 回退检查（仅对 PDF 且有效内容过少或质量明显异常时）
-    effective_len = _content_quality_score(result.content)
-    needs_fallback = (
-        enable_vlm_fallback
-        and client is not None
-        and result.extractor == "docling"
-        and file_path.suffix.lower() == ".pdf"
-        and needs_vlm_fallback(result.content, file_path, config=cfg)
-    )
-
-    if needs_fallback:
-        logger.debug(
-            t(
-                "debug_extract_vlm_check",
-                suffix=file_path.suffix.lower(),
-                effective_length=effective_len,
-                threshold=cfg.processing.vlm_fallback_threshold,
-                needed=True,
-            )
-        )
-
-        vlm_result = _extract_pdf_first_page_with_vlm(file_path, client, config=cfg)
-
-        if vlm_result.success and _should_prefer_vlm_content(
-            result.content, vlm_result.content
-        ):
-            logger.debug(
-                t(
-                    "debug_extract_vlm_selected",
-                    vlm_length=_content_quality_score(vlm_result.content),
-                    doc_length=effective_len,
-                )
-            )
-            result = vlm_result
-        elif vlm_result.success:
-            logger.debug(
-                t(
-                    "debug_extract_vlm_skipped",
-                    doc_length=effective_len,
-                    vlm_length=_content_quality_score(vlm_result.content),
-                )
-            )
-
-    return result.content[:truncate_limit]
+    return resolved.final_content[:truncate_limit]
