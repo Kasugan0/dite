@@ -10,15 +10,12 @@ from dite.cache import VLM_CACHE_VERSION, FileCache
 from dite.config import Config, load_config
 from dite.extractors import (
     ExtractorRegistry,
-    extract_document,
-    extract_with_vlm_fallback,
-    needs_vlm_fallback,
+    get_extractor,
 )
+from dite.extractors.base import ExtractionResult
 from dite.extractors.router import (
-    _compute_effective_content_length,
-    _content_quality_score,
-    _should_prefer_vlm_content,
-    classify_pdf_profile,
+    ResolvedSource,
+    resolve_document_extraction,
 )
 from dite.i18n import t
 from dite.utils.hashing import compute_file_hash
@@ -52,9 +49,38 @@ class PipelineResult:
     cluster_names: dict[int, str]
     noise_repaired: int = 0
     clusters_merged: int = 0
-    docling_cache_hits: int = 0
+    extraction: "ExtractionSummary" = field(default_factory=lambda: ExtractionSummary())
+    file_reports: list["ExtractionFileReport"] = field(default_factory=list)
+
+
+@dataclass
+class ExtractionFileReport:
+    """Per-file extraction diagnostics used by CLI/reporting layers."""
+
+    file: Path
+    primary_extractor: str
+    primary_success: bool
+    primary_error: str | None
+    source_profile: str | None
+    source_effective_length: int
+    selected_source: ResolvedSource
+    final_effective_length: int
+    excerpt_was_truncated: bool
+    vlm_api_page_calls: int
+    sample_page_limit: int | None
+    file_hash: str
+
+
+@dataclass
+class ExtractionSummary:
+    """Aggregated extraction metrics separated from core pipeline output."""
+
+    doc_cache_hits: int = 0
     vlm_cache_hits: int = 0
-    vlm_fallback_count: int = 0
+    primary_failures: int = 0
+    source_fallback_needed: int = 0
+    selected_vlm_files: int = 0
+    vlm_api_page_calls: int = 0
     duplicate_count: int = 0
     duplicate_groups: dict[str, list[str]] = field(default_factory=dict)
 
@@ -91,9 +117,13 @@ class PipelineService:
                 embeddings=np.array([]),
                 labels=np.array([]),
                 cluster_names={},
+                extraction=ExtractionSummary(),
+                file_reports=[],
             )
 
-        contents, file_hashes, metrics = self._extract_contents(files, options)
+        contents, file_hashes, extraction, file_reports = self._extract_contents(
+            files, options
+        )
         embeddings = self._vectorize(files, file_hashes, contents, options)
         labels, noise_repaired = cluster_documents(
             embeddings,
@@ -120,7 +150,8 @@ class PipelineService:
             cluster_names=cluster_names,
             noise_repaired=noise_repaired,
             clusters_merged=clusters_merged,
-            **metrics,
+            extraction=extraction,
+            file_reports=file_reports,
         )
 
     def extract_files(
@@ -134,53 +165,62 @@ class PipelineService:
                 embeddings=np.array([]),
                 labels=np.array([]),
                 cluster_names={},
+                extraction=ExtractionSummary(),
+                file_reports=[],
             )
 
-        contents, _file_hashes, metrics = self._extract_contents(files, options)
+        contents, _file_hashes, extraction, file_reports = self._extract_contents(
+            files, options
+        )
         return PipelineResult(
             files=files,
             contents=contents,
             embeddings=np.array([]),
             labels=np.array([]),
             cluster_names={},
-            **metrics,
+            extraction=extraction,
+            file_reports=file_reports,
         )
 
     def _extract_contents(
         self,
         files: list[Path],
         options: PipelineOptions,
-    ) -> tuple[list[str], list[str], dict[str, int | dict[str, list[str]]]]:
+    ) -> tuple[list[str], list[str], ExtractionSummary, list[ExtractionFileReport]]:
         contents: list[str] = []
         file_hashes: list[str] = []
-        docling_cache_hits = 0
-        vlm_cache_hits = 0
-        vlm_fallback_count = 0
-        duplicate_count = 0
-        failed_count = 0
-        duplicate_groups: dict[str, list[str]] = {}
+        file_reports: list[ExtractionFileReport] = []
+        summary = ExtractionSummary()
         hash_to_files: dict[str, list[str]] = {}
-        vlm_threshold = self.config.processing.vlm_fallback_threshold
         truncate_limit = self.config.processing.text_truncate_limit
 
         for file in files:
             self.logger.debug(t("debug_extract_processing_file", path=file))
-            file_hash = compute_file_hash(file) if options.use_cache and self.cache else ""
+            file_hash = compute_file_hash(file)
             file_hashes.append(file_hash)
             if file_hash:
                 self.logger.debug(t("debug_extract_hash", hash=file_hash[:12]))
                 hash_to_files.setdefault(file_hash, []).append(str(file))
 
-            docling_content = None
+            primary_result = None
             cached_vlm_content = None
-            source_file = None
-            doc_extraction_success = False
-            doc_extraction_error = None
             if options.use_cache and self.cache:
-                docling_content, source_file = self.cache.get_content(file, file_hash)
-                if docling_content:
-                    doc_extraction_success = True
-                    docling_cache_hits += 1
+                cached_primary_content, source_file = self.cache.get_content(
+                    file, file_hash
+                )
+                if cached_primary_content:
+                    extractor = get_extractor(
+                        file,
+                        self.client,
+                        registry=self.extractor_registry,
+                        config=self.config,
+                    )
+                    primary_result = self._build_cached_primary_result(
+                        file,
+                        cached_primary_content,
+                        extractor.name if extractor is not None else "cache",
+                    )
+                    summary.doc_cache_hits += 1
                     self.logger.debug(t("debug_extract_doc_cache_hit"))
                     if source_file:
                         self.logger.debug(
@@ -192,18 +232,12 @@ class PipelineService:
                 else:
                     self.logger.debug(t("debug_extract_doc_cache_miss"))
 
-            if (
-                docling_content is None
-                and file.suffix.lower() == ".pdf"
-                and options.use_cache
-                and self.cache
-            ):
+            if file.suffix.lower() == ".pdf" and options.use_cache and self.cache:
                 cached_vlm_content = self.cache.get_vlm_content(
                     file, file_hash, VLM_CACHE_VERSION
                 )
                 if cached_vlm_content:
-                    vlm_cache_hits += 1
-                    docling_content = ""
+                    summary.vlm_cache_hits += 1
                     self.logger.debug(
                         t(
                             "debug_extract_vlm_cache_hit",
@@ -211,172 +245,122 @@ class PipelineService:
                         )
                     )
 
-            if docling_content is None:
-                result = extract_document(
-                    file,
-                    self.client,
-                    registry=self.extractor_registry,
-                    config=self.config,
-                )
-                docling_content = result.content if result.success else ""
-                doc_extraction_success = result.success
-                doc_extraction_error = result.error
-                if not result.success:
-                    failed_count += 1
-                self.logger.debug(
-                    t(
-                        "debug_extract_doc_result",
-                        extractor=result.extractor,
-                        success=result.success,
-                        length=len(docling_content),
-                        error=result.error or "-",
-                    )
-                )
-                if options.use_cache and self.cache and result.success:
-                    self.cache.save(
-                        file_path=file,
-                        file_hash=file_hash,
-                        file_mtime=file.stat().st_mtime,
-                        content_md=docling_content,
-                        model_version=self.config.models.embedding,
-                    )
-
-            final_content = docling_content
-            effective_length = _compute_effective_content_length(docling_content)
-            needs_fallback = needs_vlm_fallback(
-                docling_content,
+            resolved = resolve_document_extraction(
                 file,
-                vlm_fallback_threshold=vlm_threshold,
+                self.client,
+                enable_vlm_fallback=True,
+                allow_vlm_api=options.allow_vlm_api,
+                cached_vlm_content=cached_vlm_content,
+                primary_result=primary_result,
+                registry=self.extractor_registry,
+                config=self.config,
             )
-            if file.suffix.lower() == ".pdf":
-                self.logger.debug(
-                    t(
-                        "debug_extract_vlm_check",
-                        suffix=file.suffix.lower(),
-                        effective_length=effective_length,
-                        threshold=vlm_threshold,
-                        needed=needs_fallback,
-                    )
+
+            if (
+                primary_result is None
+                and options.use_cache
+                and self.cache
+                and resolved.primary_result.success
+            ):
+                self.cache.save(
+                    file_path=file,
+                    file_hash=file_hash,
+                    file_mtime=file.stat().st_mtime,
+                    content_md=resolved.primary_result.content,
+                    model_version=self.config.models.embedding,
                 )
-                pdf_profile = classify_pdf_profile(
-                    docling_content,
+
+            if resolved.primary_result.success is False:
+                summary.primary_failures += 1
+            if resolved.fallback_needed:
+                summary.source_fallback_needed += 1
+            if resolved.selected_source != "primary":
+                summary.selected_vlm_files += 1
+            summary.vlm_api_page_calls += resolved.vlm_api_page_calls
+
+            if (
+                resolved.vlm_source == "api"
+                and resolved.vlm_api_success
+                and resolved.vlm_content
+                and options.use_cache
+                and self.cache
+            ):
+                self.cache.update_vlm_content(
                     file,
-                    success=doc_extraction_success,
-                    error=doc_extraction_error,
-                    vlm_fallback_threshold=vlm_threshold,
-                    config=self.config,
+                    file_hash,
+                    resolved.vlm_content,
+                    VLM_CACHE_VERSION,
                 )
-                if pdf_profile is not None:
-                    self.logger.debug(
-                        t(
-                            "debug_pdf_profile",
-                            kind=pdf_profile.kind,
-                            reason=pdf_profile.reason,
-                            effective_length=pdf_profile.effective_length,
-                            glyph_noise_tokens=pdf_profile.glyph_noise_tokens,
-                            needs_vlm_fallback=pdf_profile.needs_vlm_fallback,
-                        )
-                    )
 
-            if needs_fallback:
-                vlm_content = cached_vlm_content
-                if options.use_cache and self.cache:
-                    if vlm_content is None:
-                        vlm_content = self.cache.get_vlm_content(
-                            file, file_hash, VLM_CACHE_VERSION
-                        )
-                    if vlm_content and cached_vlm_content is None:
-                        vlm_cache_hits += 1
-                        self.logger.debug(
-                            t(
-                                "debug_extract_vlm_cache_hit",
-                                length=len(vlm_content),
-                            )
-                        )
-
-                if vlm_content is None and options.allow_vlm_api:
-                    self.logger.debug(t("debug_extract_vlm_api_call"))
-                    vlm_result = extract_with_vlm_fallback(
-                        file,
-                        self.client,
-                        config=self.config,
-                    )
-                    self.logger.debug(
-                        t(
-                            "debug_extract_vlm_result",
-                            success=vlm_result.success,
-                            length=len(vlm_result.content),
-                            error=vlm_result.error or "-",
-                        )
-                    )
-                    if vlm_result.success:
-                        vlm_content = vlm_result.content
-                        vlm_fallback_count += 1
-                        if options.use_cache and self.cache:
-                            self.cache.update_vlm_content(
-                                file,
-                                file_hash,
-                                vlm_content,
-                                VLM_CACHE_VERSION,
-                            )
-
-                if vlm_content and _should_prefer_vlm_content(
-                    docling_content, vlm_content
-                ):
-                    final_content = vlm_content
-                    self.logger.debug(
-                        t(
-                            "debug_extract_vlm_selected",
-                            vlm_length=_content_quality_score(vlm_content),
-                            doc_length=effective_length,
-                        )
-                    )
-                elif vlm_content:
-                    self.logger.debug(
-                        t(
-                            "debug_extract_vlm_skipped",
-                            doc_length=effective_length,
-                            vlm_length=_content_quality_score(vlm_content),
-                        )
-                    )
-
-            if len(final_content) > truncate_limit:
+            if len(resolved.final_content) > truncate_limit:
                 self.logger.debug(
                     t(
                         "debug_extract_truncated",
-                        original=len(final_content),
+                        original=len(resolved.final_content),
                         limit=truncate_limit,
                     )
                 )
             contents.append(
-                ContentTruncator.truncate_smart(final_content, max_chars=truncate_limit)
+                ContentTruncator.truncate_smart(
+                    resolved.final_content,
+                    max_chars=truncate_limit,
+                )
+            )
+            file_reports.append(
+                ExtractionFileReport(
+                    file=file,
+                    primary_extractor=resolved.primary_result.extractor,
+                    primary_success=resolved.primary_result.success,
+                    primary_error=resolved.primary_result.error,
+                    source_profile=(
+                        resolved.pdf_profile.kind if resolved.pdf_profile else None
+                    ),
+                    source_effective_length=resolved.primary_effective_length,
+                    selected_source=resolved.selected_source,
+                    final_effective_length=resolved.final_effective_length,
+                    excerpt_was_truncated=len(resolved.final_content) > truncate_limit,
+                    vlm_api_page_calls=resolved.vlm_api_page_calls,
+                    sample_page_limit=resolved.sample_page_limit,
+                    file_hash=file_hash,
+                )
             )
 
         duplicate_groups = {
             file_hash: file_list
             for file_hash, file_list in hash_to_files.items()
-            if len(file_list) > 1
+            if file_hash and len(file_list) > 1
         }
-        duplicate_count = sum(len(file_list) - 1 for file_list in duplicate_groups.values())
+        summary.duplicate_groups = duplicate_groups
+        summary.duplicate_count = sum(
+            len(file_list) - 1 for file_list in duplicate_groups.values()
+        )
 
         self.logger.debug(
             t(
                 "debug_extract_summary",
-                doc_cache_hits=docling_cache_hits,
-                vlm_cache_hits=vlm_cache_hits,
-                vlm_fallback_calls=vlm_fallback_count,
-                duplicates=duplicate_count,
-                failed=failed_count,
+                doc_cache_hits=summary.doc_cache_hits,
+                vlm_cache_hits=summary.vlm_cache_hits,
+                primary_failures=summary.primary_failures,
+                source_fallback_needed=summary.source_fallback_needed,
+                selected_vlm_files=summary.selected_vlm_files,
+                vlm_api_page_calls=summary.vlm_api_page_calls,
+                duplicates=summary.duplicate_count,
             )
         )
 
-        return contents, file_hashes, {
-            "docling_cache_hits": docling_cache_hits,
-            "vlm_cache_hits": vlm_cache_hits,
-            "vlm_fallback_count": vlm_fallback_count,
-            "duplicate_count": duplicate_count,
-            "duplicate_groups": duplicate_groups,
-        }
+        return contents, file_hashes, summary, file_reports
+
+    @staticmethod
+    def _build_cached_primary_result(
+        _file_path: Path,
+        content: str,
+        extractor_name: str,
+    ) -> ExtractionResult:
+        return ExtractionResult(
+            content=content,
+            success=True,
+            extractor=extractor_name,
+        )
 
     def _vectorize(
         self,

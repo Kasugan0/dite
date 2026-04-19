@@ -15,6 +15,7 @@ from dite.core.embedder import get_embedding_cache_version
 from dite.core.pipeline import PipelineOptions, PipelineService
 from dite.core.scanner import scan_files
 from dite.extractors.base import ExtractionResult
+from dite.extractors.router import PDF_VLM_SAMPLE_PAGE_LIMIT, VLMSamplingResult
 from dite.i18n import set_locale
 from dite.utils.hashing import compute_file_hash
 from dite.utils.logging import setup_logging
@@ -44,14 +45,18 @@ def test_pipeline_reuses_vlm_cache_across_runs(tmp_path: Path, monkeypatch) -> N
     ) -> bool:
         return file_path.suffix.lower() == ".pdf"
 
-    def fake_extract_with_vlm_fallback(
-        file_path: Path, client, config=None
-    ) -> ExtractionResult:
+    def fake_extract_with_vlm_sampling(
+        file_path: Path, client, config=None, max_pages=PDF_VLM_SAMPLE_PAGE_LIMIT
+    ) -> VLMSamplingResult:
         call_count["vlm"] += 1
-        return ExtractionResult(
-            content="this is vlm content",
-            success=True,
-            extractor="vlm_fallback",
+        return VLMSamplingResult(
+            result=ExtractionResult(
+                content="this is vlm content",
+                success=True,
+                extractor="vlm_fallback",
+            ),
+            api_page_calls=3,
+            sample_page_limit=max_pages,
         )
 
     def fake_get_embeddings(
@@ -80,12 +85,13 @@ def test_pipeline_reuses_vlm_cache_across_runs(tmp_path: Path, monkeypatch) -> N
     ):
         return labels, {0: "Cluster_A"}, 0
 
-    monkeypatch.setattr("dite.core.pipeline.extract_document", fake_extract_document)
+    monkeypatch.setattr("dite.extractors.router.extract_document", fake_extract_document)
     monkeypatch.setattr(
-        "dite.core.pipeline.needs_vlm_fallback", fake_needs_vlm_fallback
+        "dite.extractors.router.needs_vlm_fallback", fake_needs_vlm_fallback
     )
     monkeypatch.setattr(
-        "dite.core.pipeline.extract_with_vlm_fallback", fake_extract_with_vlm_fallback
+        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        fake_extract_with_vlm_sampling,
     )
     monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
     monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
@@ -103,11 +109,12 @@ def test_pipeline_reuses_vlm_cache_across_runs(tmp_path: Path, monkeypatch) -> N
     first = service.run(tmp_path, options)
     second = service.run(tmp_path, options)
 
-    assert first.vlm_fallback_count == 1
-    assert first.vlm_cache_hits == 0
-    assert second.vlm_fallback_count == 0
-    assert second.vlm_cache_hits == 1
-    assert call_count == {"doc": 1, "vlm": 1, "emb": 1}
+    assert first.extraction.selected_vlm_files == 1
+    assert first.extraction.vlm_cache_hits == 0
+    assert first.extraction.vlm_api_page_calls == 3
+    assert second.extraction.selected_vlm_files == 1
+    assert second.extraction.vlm_cache_hits == 1
+    assert call_count == {"doc": 2, "vlm": 1, "emb": 1}
 
     cache.close()
 
@@ -138,7 +145,7 @@ def test_extract_files_stops_before_embedding_and_clustering(
     def fail_generate_all_cluster_names(*args, **kwargs):
         raise AssertionError("naming should not run in PDF extraction check")
 
-    monkeypatch.setattr("dite.core.pipeline.extract_document", fake_extract_document)
+    monkeypatch.setattr("dite.extractors.router.extract_document", fake_extract_document)
     monkeypatch.setattr("dite.core.pipeline.get_embeddings", fail_get_embeddings)
     monkeypatch.setattr("dite.core.pipeline.cluster_documents", fail_cluster_documents)
     monkeypatch.setattr(
@@ -169,19 +176,19 @@ def test_extract_files_can_disable_vlm_api(tmp_path: Path, monkeypatch) -> None:
     ) -> ExtractionResult:
         return ExtractionResult(content="", success=False, extractor="docling")
 
-    def fake_extract_with_vlm_fallback(
-        file_path: Path, client, config=None
-    ) -> ExtractionResult:
+    def fake_extract_with_vlm_sampling(
+        file_path: Path, client, config=None, max_pages=PDF_VLM_SAMPLE_PAGE_LIMIT
+    ) -> VLMSamplingResult:
         raise AssertionError("VLM API should not run when disabled")
 
-    monkeypatch.setattr("dite.core.pipeline.extract_document", fake_extract_document)
+    monkeypatch.setattr("dite.extractors.router.extract_document", fake_extract_document)
     monkeypatch.setattr(
-        "dite.core.pipeline.needs_vlm_fallback",
+        "dite.extractors.router.needs_vlm_fallback",
         lambda *args, **kwargs: True,
     )
     monkeypatch.setattr(
-        "dite.core.pipeline.extract_with_vlm_fallback",
-        fake_extract_with_vlm_fallback,
+        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        fake_extract_with_vlm_sampling,
     )
 
     result = service.extract_files(
@@ -194,7 +201,7 @@ def test_extract_files_can_disable_vlm_api(tmp_path: Path, monkeypatch) -> None:
     )
 
     assert result.contents == [""]
-    assert result.vlm_fallback_count == 0
+    assert result.extraction.selected_vlm_files == 0
 
 
 def test_pipeline_reuses_vlm_cache_by_hash_across_paths(
@@ -225,11 +232,11 @@ def test_pipeline_reuses_vlm_cache_by_hash_across_paths(
         file_path: Path, client, registry=None, config=None
     ) -> ExtractionResult:
         call_count["doc"] += 1
-        raise AssertionError("Docling should not run when VLM hash cache exists")
+        return ExtractionResult(content="", success=False, extractor="docling")
 
-    def fake_extract_with_vlm_fallback(
-        file_path: Path, client, config=None
-    ) -> ExtractionResult:
+    def fake_extract_with_vlm_sampling(
+        file_path: Path, client, config=None, max_pages=PDF_VLM_SAMPLE_PAGE_LIMIT
+    ) -> VLMSamplingResult:
         call_count["vlm"] += 1
         raise AssertionError("VLM should not run when VLM hash cache exists")
 
@@ -269,12 +276,13 @@ def test_pipeline_reuses_vlm_cache_by_hash_across_paths(
     ):
         return labels, {0: "Cluster_A"}, 0
 
-    monkeypatch.setattr("dite.core.pipeline.extract_document", fake_extract_document)
+    monkeypatch.setattr("dite.extractors.router.extract_document", fake_extract_document)
     monkeypatch.setattr(
-        "dite.core.pipeline.extract_with_vlm_fallback", fake_extract_with_vlm_fallback
+        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        fake_extract_with_vlm_sampling,
     )
     monkeypatch.setattr(
-        "dite.core.pipeline.needs_vlm_fallback", fake_needs_vlm_fallback
+        "dite.extractors.router.needs_vlm_fallback", fake_needs_vlm_fallback
     )
     monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
     monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
@@ -292,9 +300,9 @@ def test_pipeline_reuses_vlm_cache_by_hash_across_paths(
         ),
     )
 
-    assert result.vlm_cache_hits == 1
-    assert result.vlm_fallback_count == 0
-    assert call_count == {"doc": 0, "vlm": 0, "emb": 1}
+    assert result.extraction.vlm_cache_hits == 1
+    assert result.extraction.selected_vlm_files == 1
+    assert call_count == {"doc": 1, "vlm": 0, "emb": 1}
     assert result.contents == ["cached vlm content from another path"]
     assert captured["texts"] == ["cached vlm content from another path"]
     assert captured["file_names"] == ["alias.pdf"]
@@ -331,13 +339,17 @@ def test_pipeline_prefers_vlm_when_docling_content_is_glyph_noise(
     ) -> bool:
         return True
 
-    def fake_extract_with_vlm_fallback(
-        file_path: Path, client, config=None
-    ) -> ExtractionResult:
-        return ExtractionResult(
-            content="这是 VLM 提取出的正常文本。" * 20,
-            success=True,
-            extractor="vlm_fallback",
+    def fake_extract_with_vlm_sampling(
+        file_path: Path, client, config=None, max_pages=PDF_VLM_SAMPLE_PAGE_LIMIT
+    ) -> VLMSamplingResult:
+        return VLMSamplingResult(
+            result=ExtractionResult(
+                content="这是 VLM 提取出的正常文本。" * 20,
+                success=True,
+                extractor="vlm_fallback",
+            ),
+            api_page_calls=4,
+            sample_page_limit=max_pages,
         )
 
     def fake_get_embeddings(
@@ -366,12 +378,13 @@ def test_pipeline_prefers_vlm_when_docling_content_is_glyph_noise(
     ):
         return labels, {0: "Cluster_A"}, 0
 
-    monkeypatch.setattr("dite.core.pipeline.extract_document", fake_extract_document)
+    monkeypatch.setattr("dite.extractors.router.extract_document", fake_extract_document)
     monkeypatch.setattr(
-        "dite.core.pipeline.needs_vlm_fallback", fake_needs_vlm_fallback
+        "dite.extractors.router.needs_vlm_fallback", fake_needs_vlm_fallback
     )
     monkeypatch.setattr(
-        "dite.core.pipeline.extract_with_vlm_fallback", fake_extract_with_vlm_fallback
+        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        fake_extract_with_vlm_sampling,
     )
     monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
     monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
@@ -446,13 +459,13 @@ def test_pipeline_real_scan_extract_and_cache_hits(tmp_path: Path, monkeypatch) 
     second = service.run(tmp_path, options)
 
     assert len(first.files) == 2
-    assert first.docling_cache_hits == 1
-    assert first.duplicate_count == 1
-    assert second.docling_cache_hits == 2
-    assert second.duplicate_count == 1
-    assert len(second.duplicate_groups) == 1
-    assert first.vlm_fallback_count == 0
-    assert second.vlm_fallback_count == 0
+    assert first.extraction.doc_cache_hits == 1
+    assert first.extraction.duplicate_count == 1
+    assert second.extraction.doc_cache_hits == 2
+    assert second.extraction.duplicate_count == 1
+    assert len(second.extraction.duplicate_groups) == 1
+    assert first.extraction.selected_vlm_files == 0
+    assert second.extraction.selected_vlm_files == 0
 
     cache.close()
 
@@ -649,9 +662,9 @@ def test_pipeline_uses_smart_content_excerpt_for_embedding(
     ):
         return labels, {0: "Cluster_A"}, 0
 
-    monkeypatch.setattr("dite.core.pipeline.extract_document", fake_extract_document)
+    monkeypatch.setattr("dite.extractors.router.extract_document", fake_extract_document)
     monkeypatch.setattr(
-        "dite.core.pipeline.needs_vlm_fallback", lambda *args, **kwargs: False
+        "dite.extractors.router.needs_vlm_fallback", lambda *args, **kwargs: False
     )
     monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
     monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
@@ -837,9 +850,9 @@ def test_pipeline_verbose_logs_include_extraction_summary(
     ):
         return labels, {0: "Notes"}, 0
 
-    monkeypatch.setattr("dite.core.pipeline.extract_document", fake_extract_document)
+    monkeypatch.setattr("dite.extractors.router.extract_document", fake_extract_document)
     monkeypatch.setattr(
-        "dite.core.pipeline.needs_vlm_fallback", lambda *args, **kwargs: False
+        "dite.extractors.router.needs_vlm_fallback", lambda *args, **kwargs: False
     )
     monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
     monkeypatch.setattr(
@@ -1264,14 +1277,20 @@ def test_extract_with_vlm_fallback_uses_passed_config(
     )
     captured: dict[str, object] = {}
 
-    def fake_extract(file_path, client, config, max_pages=10):
+    def fake_extract(
+        file_path, client, config, max_pages=PDF_VLM_SAMPLE_PAGE_LIMIT
+    ) -> VLMSamplingResult:
         captured["file_path"] = file_path
         captured["client"] = client
         captured["config"] = config
         captured["max_pages"] = max_pages
-        return expected
+        return VLMSamplingResult(
+            result=expected,
+            api_page_calls=2,
+            sample_page_limit=max_pages,
+        )
 
-    monkeypatch.setattr(router, "_extract_pdf_first_page_with_vlm", fake_extract)
+    monkeypatch.setattr(router, "_extract_pdf_with_vlm_sampling", fake_extract)
 
     client = object()
     result = router.extract_with_vlm_fallback(pdf_path, client=client, config=cfg)
@@ -1280,6 +1299,7 @@ def test_extract_with_vlm_fallback_uses_passed_config(
     assert captured["file_path"] == pdf_path
     assert captured["client"] is client
     assert captured["config"] is cfg
+    assert captured["max_pages"] == PDF_VLM_SAMPLE_PAGE_LIMIT
 
 
 def test_extract_with_vlm_fallback_loads_config_when_missing(
@@ -1297,15 +1317,21 @@ def test_extract_with_vlm_fallback_loads_config_when_missing(
         calls["load"] += 1
         return loaded_cfg
 
-    def fake_extract(file_path, client, config, max_pages=10):
-        return ExtractionResult(
-            content="loaded" if config is loaded_cfg else "wrong",
-            success=True,
-            extractor="vlm_fallback",
+    def fake_extract(
+        file_path, client, config, max_pages=PDF_VLM_SAMPLE_PAGE_LIMIT
+    ) -> VLMSamplingResult:
+        return VLMSamplingResult(
+            result=ExtractionResult(
+                content="loaded" if config is loaded_cfg else "wrong",
+                success=True,
+                extractor="vlm_fallback",
+            ),
+            api_page_calls=1,
+            sample_page_limit=max_pages,
         )
 
     monkeypatch.setattr(router, "load_config", fake_load_config)
-    monkeypatch.setattr(router, "_extract_pdf_first_page_with_vlm", fake_extract)
+    monkeypatch.setattr(router, "_extract_pdf_with_vlm_sampling", fake_extract)
 
     result = router.extract_with_vlm_fallback(pdf_path, client=object(), config=None)
 
