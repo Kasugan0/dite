@@ -39,8 +39,13 @@ class Messages:
     pdf_check_no_pdfs: str
     pdf_check_found_pdfs: str
     pdf_check_done: str
+    pdf_check_note: str
     pdf_check_weak_table_title: str
+    pdf_check_verbose_table_title: str
     pdf_check_table_file: str
+    pdf_check_table_primary_extractor: str
+    pdf_check_table_source_profile: str
+    pdf_check_table_selected_source: str
     pdf_check_table_effective_length: str
     pdf_check_failed: str
     pdf_check_passed: str
@@ -50,6 +55,15 @@ class Messages:
     cache_vlm_hit: str
     cache_vlm_fallback: str
     cache_duplicate: str
+    scan_extraction_verbose: str
+    extract_source_primary: str
+    extract_source_vlm_cache: str
+    extract_source_vlm_api: str
+    extract_profile_native_text: str
+    extract_profile_weak_text: str
+    extract_profile_scanned_image: str
+    extract_profile_mixed_pdf: str
+    extract_profile_parser_timeout_or_broken: str
 
     # Clustering results
     cluster_report_title: str
@@ -259,24 +273,46 @@ ZH_CN = Messages(
     scan_report_saved="报告已保存: {path}",
     scan_status_knn_suffix="k-NN 修复: {count}",
     scan_status_merged_suffix="已合并: {count}",
-    pdf_check_description="只检查 PDF 提取，不执行向量化、聚类或命名",
+    pdf_check_description="快速检查 PDF 最终提取结果是否足够可用，不做全文完整性审计",
     pdf_check_no_pdfs="未找到 PDF 文件",
     pdf_check_found_pdfs="找到 {count} 个 PDF 文件",
     pdf_check_done=(
-        "PDF 提取检查完成 (文档缓存: {doc_cache_hits}, VLM缓存: {vlm_cache_hits}, "
-        "VLM回退: {vlm_fallback_calls}, 重复文件: {duplicates}, "
+        "PDF 快速检查完成 (文档缓存: {doc_cache_hits}, VLM缓存: {vlm_cache_hits}, "
+        "主解析失败: {primary_failures}, 源内容需回退: {source_fallback_needed}, "
+        "最终使用 VLM: {selected_vlm_files}, VLM页级调用: {vlm_api_page_calls}, "
+        "重复文件: {duplicates}, "
         "弱内容: {weak}, 空内容: {empty})"
     ),
-    pdf_check_weak_table_title="弱内容 PDF",
+    pdf_check_note=(
+        "VLM 仅采样前 10 页；本命令验证的是最终提取结果是否足够可用，"
+        "不代表整本文档已完整提取。"
+    ),
+    pdf_check_weak_table_title="最终弱内容 PDF",
+    pdf_check_verbose_table_title="提取明细",
     pdf_check_table_file="文件",
+    pdf_check_table_primary_extractor="主解析器",
+    pdf_check_table_source_profile="源内容类型",
+    pdf_check_table_selected_source="最终来源",
     pdf_check_table_effective_length="有效长度",
-    pdf_check_failed="{count} 个 PDF 提取结果低于阈值",
-    pdf_check_passed="{count} 个 PDF 提取结果通过检查",
+    pdf_check_failed="{count} 个 PDF 的最终提取结果低于阈值",
+    pdf_check_passed="{count} 个 PDF 的最终提取结果通过快速检查",
     # Cache messages
     cache_docling_hit="文档缓存: {count}",
     cache_vlm_hit="VLM缓存: {count}",
-    cache_vlm_fallback="VLM回退: {count}",
+    cache_vlm_fallback="最终使用 VLM: {count}",
     cache_duplicate="重复文件: {count}",
+    scan_extraction_verbose=(
+        "提取细节: 主解析失败={primary_failures}, 源内容需回退={source_fallback_needed}, "
+        "VLM页级调用={vlm_api_page_calls}"
+    ),
+    extract_source_primary="主解析结果",
+    extract_source_vlm_cache="VLM缓存",
+    extract_source_vlm_api="VLM采样",
+    extract_profile_native_text="文本层可用",
+    extract_profile_weak_text="文本层过弱",
+    extract_profile_scanned_image="扫描件/无文本层",
+    extract_profile_mixed_pdf="正文夹杂噪音字形",
+    extract_profile_parser_timeout_or_broken="主解析失败",
     # Clustering results
     cluster_report_title="=== 聚类分析报告 ===",
     cluster_total_files="总文件数:",
@@ -425,7 +461,9 @@ ZH_CN = Messages(
     debug_extract_truncated="  内容截断: {original} -> {limit}",
     debug_extract_summary=(
         "提取汇总: doc缓存命中={doc_cache_hits}, VLM缓存命中={vlm_cache_hits}, "
-        "VLM回退调用={vlm_fallback_calls}, 重复文件={duplicates}, 提取失败={failed}"
+        "主解析失败={primary_failures}, 源内容需回退={source_fallback_needed}, "
+        "最终使用VLM={selected_vlm_files}, VLM页级调用={vlm_api_page_calls}, "
+        "重复文件={duplicates}"
     ),
     debug_vector_cache_summary=(
         "Embedding 缓存: 命中 {hits} 个, 未命中 {misses} 个"
@@ -512,24 +550,49 @@ EN = Messages(
     scan_report_saved="Report saved: {path}",
     scan_status_knn_suffix="k-NN repaired: {count}",
     scan_status_merged_suffix="Merged: {count}",
-    pdf_check_description="Check PDF extraction only, without embedding, clustering, or naming",
+    pdf_check_description=(
+        "Quickly check whether final PDF extraction output is usable; "
+        "this is not a full-document completeness audit"
+    ),
     pdf_check_no_pdfs="No PDF files found",
     pdf_check_found_pdfs="Found {count} PDF files",
     pdf_check_done=(
-        "PDF extraction check completed (doc cache: {doc_cache_hits}, "
-        "VLM cache: {vlm_cache_hits}, VLM fallback: {vlm_fallback_calls}, "
+        "PDF smoke check completed (doc cache: {doc_cache_hits}, "
+        "VLM cache: {vlm_cache_hits}, primary failures: {primary_failures}, "
+        "fallback needed: {source_fallback_needed}, selected VLM: {selected_vlm_files}, "
+        "VLM page calls: {vlm_api_page_calls}, "
         "duplicates: {duplicates}, weak: {weak}, empty: {empty})"
     ),
-    pdf_check_weak_table_title="Weak PDF contents",
+    pdf_check_note=(
+        "VLM samples only the first 10 pages. This command checks whether the "
+        "final extraction output is usable, not whether the full document was completely extracted."
+    ),
+    pdf_check_weak_table_title="Weak final PDF outputs",
+    pdf_check_verbose_table_title="Extraction details",
     pdf_check_table_file="File",
+    pdf_check_table_primary_extractor="Primary extractor",
+    pdf_check_table_source_profile="Source profile",
+    pdf_check_table_selected_source="Selected source",
     pdf_check_table_effective_length="Effective length",
-    pdf_check_failed="{count} PDF extraction results are below threshold",
-    pdf_check_passed="{count} PDF extraction results passed",
+    pdf_check_failed="{count} final PDF extraction outputs are below threshold",
+    pdf_check_passed="{count} PDF outputs passed the smoke check",
     # Cache messages
     cache_docling_hit="Doc cache: {count}",
     cache_vlm_hit="VLM cache: {count}",
-    cache_vlm_fallback="VLM fallback: {count}",
+    cache_vlm_fallback="Selected VLM: {count}",
     cache_duplicate="Duplicates: {count}",
+    scan_extraction_verbose=(
+        "Extraction details: primary_failures={primary_failures}, "
+        "fallback_needed={source_fallback_needed}, vlm_page_calls={vlm_api_page_calls}"
+    ),
+    extract_source_primary="Primary output",
+    extract_source_vlm_cache="VLM cache",
+    extract_source_vlm_api="VLM sampling",
+    extract_profile_native_text="Usable text layer",
+    extract_profile_weak_text="Weak text layer",
+    extract_profile_scanned_image="Scanned/no text layer",
+    extract_profile_mixed_pdf="Text with glyph noise",
+    extract_profile_parser_timeout_or_broken="Primary parser failed",
     # Clustering results
     cluster_report_title="=== Cluster Analysis Report ===",
     cluster_total_files="Total files:",
@@ -682,8 +745,9 @@ EN = Messages(
     debug_extract_truncated="  Content truncated: {original} -> {limit}",
     debug_extract_summary=(
         "Extraction summary: doc_cache_hits={doc_cache_hits}, "
-        "vlm_cache_hits={vlm_cache_hits}, vlm_fallback_calls={vlm_fallback_calls}, "
-        "duplicates={duplicates}, failed={failed}"
+        "vlm_cache_hits={vlm_cache_hits}, primary_failures={primary_failures}, "
+        "fallback_needed={source_fallback_needed}, selected_vlm_files={selected_vlm_files}, "
+        "vlm_api_page_calls={vlm_api_page_calls}, duplicates={duplicates}"
     ),
     debug_vector_cache_summary="Embedding cache: {hits} hits, {misses} misses",
     debug_vectorizing_documents="Vectorizing {count} documents",

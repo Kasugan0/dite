@@ -96,7 +96,7 @@ def test_dite_pdf_check_uses_pdf_only_and_stops_before_pipeline_scan(
         "repair_noise": False,
         "allow_vlm_api": True,
     }
-    assert "PDF extraction results passed" in result.output
+    assert "passed the smoke check" in result.output
 
 
 def test_dite_organize_help(tmp_path: Path, monkeypatch) -> None:

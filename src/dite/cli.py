@@ -46,6 +46,7 @@ from dite.core.clusterer import _build_cluster_debug_labels  # noqa: E402
 from dite.core.embedder import get_embedding_cache_version  # noqa: E402
 from dite.core.organizer import OrganizePreview  # noqa: E402
 from dite.core.pipeline import (  # noqa: E402
+    ExtractionFileReport,
     PipelineOptions,
     PipelineResult,
     PipelineService,
@@ -56,7 +57,6 @@ from dite.extractors.docling import (  # noqa: E402
     get_docling_pdf_artifacts_path,
     has_docling_pdf_artifacts,
 )
-from dite.extractors.router import _compute_effective_content_length  # noqa: E402
 from dite.i18n import set_locale, t  # noqa: E402
 from dite.utils.llm import format_api_error  # noqa: E402
 from dite.utils.logging import get_logger, setup_logging  # noqa: E402
@@ -168,6 +168,47 @@ def _run_pipeline_or_exit(
     if cache:
         cache.close()
     raise typer.Exit(1)
+
+
+def _label_selected_source(source: str) -> str:
+    labels = {
+        "primary": t("extract_source_primary"),
+        "vlm_cache": t("extract_source_vlm_cache"),
+        "vlm_api": t("extract_source_vlm_api"),
+    }
+    return labels.get(source, source)
+
+
+def _label_source_profile(profile: str | None) -> str:
+    if profile is None:
+        return "-"
+    labels = {
+        "native_text": t("extract_profile_native_text"),
+        "weak_text": t("extract_profile_weak_text"),
+        "scanned_image": t("extract_profile_scanned_image"),
+        "mixed_pdf": t("extract_profile_mixed_pdf"),
+        "parser_timeout_or_broken": t("extract_profile_parser_timeout_or_broken"),
+    }
+    return labels.get(profile, profile)
+
+
+def _print_extraction_detail_table(file_reports: list[ExtractionFileReport]) -> None:
+    logger = get_logger()
+    table = Table(title=t("pdf_check_verbose_table_title"))
+    table.add_column(t("pdf_check_table_file"), style="path")
+    table.add_column(t("pdf_check_table_primary_extractor"))
+    table.add_column(t("pdf_check_table_source_profile"))
+    table.add_column(t("pdf_check_table_selected_source"))
+    table.add_column(t("pdf_check_table_effective_length"), justify="right")
+    for report in file_reports:
+        table.add_row(
+            str(report.file),
+            report.primary_extractor,
+            _label_source_profile(report.source_profile),
+            _label_selected_source(report.selected_source),
+            str(report.final_effective_length),
+        )
+    logger.print_table(table)
 
 
 def _build_report(
@@ -361,21 +402,34 @@ def scan(
 
     logger.status(t("scan_found_files", count=len(result.files)))
 
+    extraction = result.extraction
     cache_msg_parts = []
-    if result.docling_cache_hits:
-        cache_msg_parts.append(t("cache_docling_hit", count=result.docling_cache_hits))
-    if result.vlm_cache_hits:
-        cache_msg_parts.append(t("cache_vlm_hit", count=result.vlm_cache_hits))
-    if result.vlm_fallback_count:
-        cache_msg_parts.append(t("cache_vlm_fallback", count=result.vlm_fallback_count))
-    if result.duplicate_count:
-        cache_msg_parts.append(t("cache_duplicate", count=result.duplicate_count))
+    if extraction.doc_cache_hits:
+        cache_msg_parts.append(t("cache_docling_hit", count=extraction.doc_cache_hits))
+    if extraction.vlm_cache_hits:
+        cache_msg_parts.append(t("cache_vlm_hit", count=extraction.vlm_cache_hits))
+    if extraction.selected_vlm_files:
+        cache_msg_parts.append(
+            t("cache_vlm_fallback", count=extraction.selected_vlm_files)
+        )
+    if extraction.duplicate_count:
+        cache_msg_parts.append(t("cache_duplicate", count=extraction.duplicate_count))
     cache_msg = f" ({', '.join(cache_msg_parts)})" if cache_msg_parts else ""
     logger.status(f"{t('scan_extraction_done')}{cache_msg}")
 
-    if result.duplicate_groups and logger.verbose:
+    if logger.verbose:
+        logger.debug(
+            t(
+                "scan_extraction_verbose",
+                primary_failures=extraction.primary_failures,
+                source_fallback_needed=extraction.source_fallback_needed,
+                vlm_api_page_calls=extraction.vlm_api_page_calls,
+            )
+        )
+
+    if extraction.duplicate_groups and logger.verbose:
         logger.debug(t("debug_duplicate_groups"))
-        for file_hash, file_list in result.duplicate_groups.items():
+        for file_hash, file_list in extraction.duplicate_groups.items():
             logger.debug(t("debug_duplicate_group_hash", hash=file_hash[:12]))
             for f in file_list:
                 logger.debug(t("debug_duplicate_group_file", name=Path(f).name))
@@ -507,11 +561,12 @@ def pdf_check(
     if cache:
         cache.close()
 
+    extraction = result.extraction
     threshold = config.processing.vlm_fallback_threshold
     weak_files = [
-        (file, _compute_effective_content_length(content))
-        for file, content in zip(result.files, result.contents, strict=True)
-        if _compute_effective_content_length(content) < threshold
+        (report.file, report.final_effective_length)
+        for report in result.file_reports
+        if report.final_effective_length < threshold
     ]
     empty_count = sum(1 for _file, length in weak_files if length == 0)
 
@@ -519,14 +574,21 @@ def pdf_check(
     logger.status(
         t(
             "pdf_check_done",
-            doc_cache_hits=result.docling_cache_hits,
-            vlm_cache_hits=result.vlm_cache_hits,
-            vlm_fallback_calls=result.vlm_fallback_count,
-            duplicates=result.duplicate_count,
+            doc_cache_hits=extraction.doc_cache_hits,
+            vlm_cache_hits=extraction.vlm_cache_hits,
+            primary_failures=extraction.primary_failures,
+            source_fallback_needed=extraction.source_fallback_needed,
+            selected_vlm_files=extraction.selected_vlm_files,
+            vlm_api_page_calls=extraction.vlm_api_page_calls,
+            duplicates=extraction.duplicate_count,
             weak=len(weak_files),
             empty=empty_count,
         )
     )
+    logger.print(t("pdf_check_note"))
+
+    if logger.verbose and result.file_reports:
+        _print_extraction_detail_table(result.file_reports)
 
     if weak_files:
         table = Table(title=t("pdf_check_weak_table_title"))
