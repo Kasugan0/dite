@@ -11,6 +11,7 @@ from dite.config import (
     RequestProfilesConfig,
 )
 from dite.core.clusterer import repair_noise_with_knn
+from dite.core.embedder import get_embedding_cache_version
 from dite.core.pipeline import PipelineOptions, PipelineService
 from dite.core.scanner import scan_files
 from dite.extractors.base import ExtractionResult
@@ -526,6 +527,158 @@ def test_pipeline_recomputes_embedding_when_model_changes(
     cache.close()
 
 
+def test_pipeline_recomputes_embedding_when_input_version_changes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    doc = tmp_path / "sample.txt"
+    doc.write_text("same content", encoding="utf-8")
+
+    cache = FileCache(db_path=tmp_path / "cache.db")
+    config = Config()
+    config.models.embedding = "embed-v1"
+    file_hash = compute_file_hash(doc)
+    cache.save(
+        file_path=doc,
+        file_hash=file_hash,
+        file_mtime=doc.stat().st_mtime,
+        content_md="same content",
+        embedding=np.array([0.1, 0.2], dtype=np.float32),
+        model_version="embed-v1",
+    )
+    service = PipelineService(client=object(), config=config, cache=cache)
+
+    captured: dict[str, object] = {}
+
+    def fake_get_embeddings(
+        client, texts, file_names, embedding_model=None
+    ) -> np.ndarray:
+        captured["texts"] = texts
+        captured["file_names"] = file_names
+        captured["embedding_model"] = embedding_model
+        return np.array([[0.9, 0.8]], dtype=np.float32)
+
+    def fake_cluster_documents(
+        embeddings: np.ndarray,
+        repair_noise: bool,
+        clustering=None,
+        item_names=None,
+    ):
+        return np.array([0]), 0
+
+    def fake_generate_all_cluster_names(
+        client,
+        labels: np.ndarray,
+        contents: list[str],
+        files: list[Path],
+        embeddings: np.ndarray | None = None,
+        merge_same_name: bool = True,
+        llm_model: str | None = None,
+        config: Config | None = None,
+    ):
+        return labels, {0: "Cluster_A"}, 0
+
+    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr(
+        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+    )
+
+    result = service.run(
+        tmp_path,
+        PipelineOptions(
+            use_cache=True,
+            use_embedding_cache=True,
+            repair_noise=True,
+            merge_same_name=False,
+        ),
+    )
+
+    assert captured == {
+        "texts": ["same content"],
+        "file_names": ["sample.txt"],
+        "embedding_model": "embed-v1",
+    }
+    np.testing.assert_allclose(result.embeddings, np.array([[0.9, 0.8]]))
+    entry = cache.get_by_path(doc)
+    assert entry is not None
+    assert entry.model_version == get_embedding_cache_version("embed-v1")
+    cache.close()
+
+
+def test_pipeline_uses_smart_content_excerpt_for_embedding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    doc = tmp_path / "book.pdf"
+    doc.write_text("fake-pdf-content", encoding="utf-8")
+
+    config = Config()
+    config.processing.text_truncate_limit = 160
+    service = PipelineService(client=object(), config=config, cache=None)
+    long_content = ("COVER " * 80) + ("RUST OWNERSHIP " * 20) + ("INDEX " * 80)
+    captured: dict[str, object] = {}
+
+    def fake_extract_document(
+        file_path: Path, client, registry=None, config=None
+    ) -> ExtractionResult:
+        return ExtractionResult(content=long_content, success=True, extractor="docling")
+
+    def fake_get_embeddings(
+        client, texts, file_names, embedding_model=None
+    ) -> np.ndarray:
+        captured["texts"] = texts
+        captured["file_names"] = file_names
+        return np.array([[0.9, 0.8]], dtype=np.float32)
+
+    def fake_cluster_documents(
+        embeddings: np.ndarray,
+        repair_noise: bool,
+        clustering=None,
+        item_names=None,
+    ):
+        return np.array([0]), 0
+
+    def fake_generate_all_cluster_names(
+        client,
+        labels: np.ndarray,
+        contents: list[str],
+        files: list[Path],
+        embeddings: np.ndarray | None = None,
+        merge_same_name: bool = True,
+        llm_model: str | None = None,
+        config: Config | None = None,
+    ):
+        return labels, {0: "Cluster_A"}, 0
+
+    monkeypatch.setattr("dite.core.pipeline.extract_document", fake_extract_document)
+    monkeypatch.setattr(
+        "dite.core.pipeline.needs_vlm_fallback", lambda *args, **kwargs: False
+    )
+    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr(
+        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+    )
+
+    service.run(
+        tmp_path,
+        PipelineOptions(
+            use_cache=False,
+            use_embedding_cache=False,
+            repair_noise=True,
+            merge_same_name=False,
+        ),
+    )
+
+    excerpt = captured["texts"][0]
+    assert isinstance(excerpt, str)
+    assert len(excerpt) <= config.processing.text_truncate_limit
+    assert "COVER" in excerpt
+    assert "RUST" in excerpt
+    assert "OWNERSHIP" in excerpt
+    assert "INDEX" in excerpt
+    assert captured["file_names"] == ["book.pdf"]
+
+
 def test_knn_repair_keeps_far_noise_with_threshold() -> None:
     embeddings = np.array(
         [
@@ -712,7 +865,9 @@ def test_pipeline_verbose_logs_include_extraction_summary(
     assert "Document extraction: extractor=text, success=True" in output
     assert "Extraction summary:" in output
     assert "Vectorizing 1 documents" in output
-    assert calls[0]["input"] == ["example content that is long enough"]
+    assert calls[0]["input"] == [
+        "File name: sample.txt\n\nContent:\nexample content that is long enough"
+    ]
 
 
 def test_generate_all_cluster_names_debug_uses_letter_labels(capsys) -> None:

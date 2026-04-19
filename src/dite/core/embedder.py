@@ -7,6 +7,19 @@ from dite.config import Config
 from dite.i18n import t
 from dite.utils.logging import get_logger
 
+EMBEDDING_INPUT_VERSION = "filename-smart-content-v1"
+
+
+def get_embedding_cache_version(embedding_model: str) -> str:
+    """Return the cache key for the current embedding input format."""
+    return f"{embedding_model}|input={EMBEDDING_INPUT_VERSION}"
+
+
+def _get_file_name(file_names: list[str] | None, index: int) -> str | None:
+    if file_names is None or index >= len(file_names):
+        return None
+    return file_names[index]
+
 
 def get_embeddings(
     client: OpenAI,
@@ -20,7 +33,7 @@ def get_embeddings(
     Args:
         client: OpenAI 兼容客户端
         texts: 文本列表
-        file_names: 文件名列表（用于空文本回退）
+        file_names: 文件名列表（作为分类信号，并用于空文本回退）
 
     Returns:
         Embedding 向量矩阵 (N, D)
@@ -31,19 +44,23 @@ def get_embeddings(
     logger.debug(t("debug_vectorizing_documents", count=len(texts)))
     logger.debug(t("debug_vectorizing_model", model=model))
 
-    # 对于空文本，使用文件名作为备用
     valid_texts = []
     fallback_count = 0
     fallback_names: list[str] = []
     for i, text in enumerate(texts):
-        if text and len(text.strip()) > 10:
-            valid_texts.append(text)
-        else:
-            # 使用文件名作为备用内容
-            name = file_names[i] if file_names else f"文件_{i}"
-            valid_texts.append(f"文件名: {name}")
-            fallback_count += 1
-            fallback_names.append(name)
+        name = _get_file_name(file_names, i)
+        stripped = text.strip() if text else ""
+        if len(stripped) > 10:
+            if name:
+                valid_texts.append(f"File name: {name}\n\nContent:\n{stripped}")
+            else:
+                valid_texts.append(stripped)
+            continue
+
+        fallback_name = name or f"file_{i}"
+        valid_texts.append(f"File name: {fallback_name}")
+        fallback_count += 1
+        fallback_names.append(fallback_name)
 
     if fallback_count > 0:
         logger.debug(
@@ -109,16 +126,22 @@ class ContentTruncator:
         if len(content) <= max_chars:
             return content
 
-        head_len = int(max_chars * 0.6)
-        mid_len = int(max_chars * 0.2)
-        tail_len = int(max_chars * 0.2)
+        first_marker = "\n\n[... middle omitted ...]\n\n"
+        second_marker = "\n\n[... omitted ...]\n\n"
+        marker_len = len(first_marker) + len(second_marker)
+        if max_chars <= marker_len + 3:
+            return content[:max_chars]
+
+        content_budget = max_chars - marker_len
+        head_len = int(content_budget * 0.6)
+        mid_len = int(content_budget * 0.2)
+        tail_len = content_budget - head_len - mid_len
 
         head = content[:head_len]
 
-        # 中间采样
-        mid_start = len(content) // 3
+        mid_start = max((len(content) - mid_len) // 2, 0)
         mid = content[mid_start : mid_start + mid_len]
 
         tail = content[-tail_len:]
 
-        return f"{head}\n\n[... 中间内容省略 ...]\n\n{mid}\n\n[... 省略 ...]\n\n{tail}"
+        return f"{head}{first_marker}{mid}{second_marker}{tail}"

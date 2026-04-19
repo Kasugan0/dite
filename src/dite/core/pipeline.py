@@ -25,7 +25,7 @@ from dite.utils.hashing import compute_file_hash
 from dite.utils.logging import get_logger
 
 from .clusterer import cluster_documents, generate_all_cluster_names
-from .embedder import get_embeddings
+from .embedder import ContentTruncator, get_embedding_cache_version, get_embeddings
 from .scanner import scan_files
 
 
@@ -348,7 +348,9 @@ class PipelineService:
                         limit=truncate_limit,
                     )
                 )
-            contents.append(final_content[:truncate_limit])
+            contents.append(
+                ContentTruncator.truncate_smart(final_content, max_chars=truncate_limit)
+            )
 
         duplicate_groups = {
             file_hash: file_list
@@ -387,7 +389,8 @@ class PipelineService:
             embeddings_list: list[tuple[int, np.ndarray]] = []
             need_embedding_indices: list[int] = []
             need_embedding_contents: list[str] = []
-            model_version = self.config.models.embedding
+            embedding_model = self.config.models.embedding
+            cache_model_version = get_embedding_cache_version(embedding_model)
 
             for i, (file, content, file_hash) in enumerate(
                 zip(files, contents, file_hashes, strict=False)
@@ -395,7 +398,7 @@ class PipelineService:
                 cached_embedding = self.cache.get_embedding(
                     file,
                     file_hash,
-                    required_model_version=model_version,
+                    required_model_version=cache_model_version,
                 )
                 if cached_embedding is not None:
                     embeddings_list.append((i, cached_embedding))
@@ -417,7 +420,7 @@ class PipelineService:
                     self.client,
                     need_embedding_contents,
                     file_names,
-                    embedding_model=model_version,
+                    embedding_model=embedding_model,
                 )
 
                 for idx, embedding in zip(
@@ -430,7 +433,7 @@ class PipelineService:
                         file_path=file,
                         file_hash=file_hash,
                         embedding=embedding,
-                        model_version=model_version,
+                        model_version=cache_model_version,
                     )
 
             embeddings_list.sort(key=lambda item: item[0])
