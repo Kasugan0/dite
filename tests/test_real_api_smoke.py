@@ -15,64 +15,36 @@ from dite.core.embedder import get_embeddings
 from dite.core.pipeline import PipelineOptions, PipelineService
 
 
-def _load_dotenv(path: Path) -> dict[str, str]:
-    """Load simple KEY=VALUE pairs from a .env file."""
-    if not path.exists():
-        return {}
-
-    data: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        data[key.strip()] = value.strip().strip("\"'")
-    return data
-
-
-def _real_api_config_values() -> tuple[str, str, str, str]:
-    """Return real API configuration values, or skip if not configured."""
+def _real_api_config_values() -> tuple[str, str, str, str, str, str]:
+    """Return real API configuration values from the global config file."""
     if os.getenv("DITE_REAL_API") != "1":
         pytest.skip("Set DITE_REAL_API=1 to run real API tests.")
 
     config = load_config()
-    dotenv = _load_dotenv(Path(__file__).resolve().parents[1] / ".env")
-    api_key = os.getenv("DITE_API_KEY") or config.api.api_key or dotenv.get("DITE_API_KEY")
-    if not api_key:
-        api_key = os.getenv("OPENAI_API_KEY") or dotenv.get("OPENAI_API_KEY")
-
-    base_url = (
-        os.getenv("DITE_API_BASE_URL")
-        or config.api.base_url
-        or dotenv.get("DITE_API_BASE_URL")
-    )
-    if not base_url:
-        base_url = os.getenv("OPENAI_BASE_URL") or dotenv.get("OPENAI_BASE_URL")
+    api_key = config.api.api_key
+    base_url = config.api.base_url
 
     if not api_key or not base_url:
         pytest.skip(
             "Missing API config. Set api.api_key/api.base_url in "
-            "~/.config/dite/config.yaml, or use env vars/.env as fallback."
+            "~/.config/dite/config.yaml."
         )
 
-    embed_model = (
-        os.getenv("DITE_EMBED_MODEL")
-        or config.models.embedding
-        or dotenv.get("DITE_EMBED_MODEL")
-        or "Qwen/Qwen3-Embedding-8B"
+    return (
+        api_key,
+        base_url,
+        config.models.embedding,
+        config.models.llm,
+        config.models.vlm,
+        config.i18n.locale,
     )
-    llm_model = (
-        os.getenv("DITE_LLM_MODEL")
-        or config.models.llm
-        or dotenv.get("DITE_LLM_MODEL")
-        or "Qwen/Qwen3-32B"
-    )
-    return api_key, base_url, embed_model, llm_model
 
 
 def _real_api_settings() -> tuple[OpenAI, str, str]:
     """Return a real API client and model names, or skip if not configured."""
-    api_key, base_url, embed_model, llm_model = _real_api_config_values()
+    api_key, base_url, embed_model, llm_model, _vlm_model, _locale = (
+        _real_api_config_values()
+    )
     client = OpenAI(api_key=api_key, base_url=base_url)
     return client, embed_model, llm_model
 
@@ -127,8 +99,11 @@ def _write_topic_docs(root: Path) -> dict[str, list[Path]]:
     return written
 
 
-def _write_real_api_config(home_dir: Path) -> None:
-    api_key, base_url, embed_model, llm_model = _real_api_config_values()
+def _write_real_api_config(
+    home_dir: Path,
+    config_values: tuple[str, str, str, str, str, str],
+) -> None:
+    api_key, base_url, embed_model, llm_model, vlm_model, locale = config_values
     config_path = home_dir / ".config" / "dite" / "config.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
@@ -139,11 +114,12 @@ def _write_real_api_config(home_dir: Path) -> None:
                 f"  api_key: {api_key}",
                 "models:",
                 f"  embedding: {embed_model}",
+                f"  vlm: {vlm_model}",
                 f"  llm: {llm_model}",
                 "cache:",
                 f"  directory: {home_dir / '.cache' / 'dite'}",
                 "i18n:",
-                "  locale: en",
+                f"  locale: {locale}",
             ]
         ),
         encoding="utf-8",
@@ -314,9 +290,11 @@ def test_real_api_cli_scan_reports_markdown_files(
     home_dir = tmp_path / "home"
     docs_dir = tmp_path / "docs"
     report_path = tmp_path / "report.json"
+    config_values = _real_api_config_values()
 
     monkeypatch.setenv("HOME", str(home_dir))
-    _write_real_api_config(home_dir)
+    _write_real_api_config(home_dir, config_values)
+    docs_dir.mkdir()
     _write_topic_docs(docs_dir)
 
     runner = CliRunner()
