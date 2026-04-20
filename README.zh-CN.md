@@ -146,6 +146,8 @@ dite pdf-check <folder> [--no-cache] [--cached-vlm-only] [-v] [-q]
 - 这是快速可用性检查，不是全文完整性审计。
 - 如果 PDF 触发 VLM 回退，只会采样前 10 页。
 - 通过检查只表示最终提取结果超过可用阈值，不代表整本文档已经完整提取。
+- 通过/失败使用的阈值来自 `processing.vlm_fallback_threshold`。
+- 当前设计里，VLM 的 10 页采样上限是固定行为，不是用户可配置项。
 
 ## ⚙️ 配置
 
@@ -159,6 +161,12 @@ dite pdf-check <folder> [--no-cache] [--cached-vlm-only] [-v] [-q]
 例如：`https://api.example.com/v1`
 
 完整参数定义请参阅 [`dite.yaml.example`](./dite.yaml.example)。
+
+和提取相关的几个关键点：
+
+- `processing.vlm_fallback_threshold` 是 `pdf-check` 使用的可用性阈值。
+- `pdf-check` 判断的是最终提取结果是否够用，不判断整本文档是否完整提取。
+- PDF 触发 VLM 回退时只采样前 10 页，这个采样上限当前固定，不提供配置项。
 
 ### 语言配置
 

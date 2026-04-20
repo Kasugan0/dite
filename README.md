@@ -148,6 +148,9 @@ Notes:
 - When PDF fallback uses VLM, it samples only the first 10 pages.
 - A passing result means the final extracted output cleared the usability
   threshold, not that the whole document was extracted completely.
+- The pass/fail threshold is `processing.vlm_fallback_threshold`.
+- The 10-page VLM sampling limit is fixed in the current design and is not a
+  user-facing config option.
 
 ## ⚙️ Configuration
 
@@ -161,6 +164,15 @@ If the directory or file does not exist, D.I.T.E. creates it automatically with 
 For example: `https://api.example.com/v1`
 
 See [`dite.yaml.example`](./dite.yaml.example) for complete parameter definitions.
+
+For extraction-related behavior:
+
+- `processing.vlm_fallback_threshold` is the usability threshold used by
+  `pdf-check`.
+- `pdf-check` evaluates final extraction usability, not full-document
+  completeness.
+- PDF VLM fallback samples only the first 10 pages, and that sampling limit is
+  currently fixed rather than configurable.
 
 ### Language Configuration
 

@@ -28,9 +28,14 @@ clustering:
 
 # Processing Parameters
 processing:
-  text_truncate_limit: 4000            # Text truncation limit (chars)
-  vlm_fallback_threshold: 100          # VLM fallback threshold
+  text_truncate_limit: 4000            # Smart excerpt limit used for downstream processing
+  vlm_fallback_threshold: 100          # Final-output usability threshold used by pdf-check smoke checks
   docling_pdf_timeout_sec: 60          # Max seconds per Docling PDF extraction
+
+# Notes:
+# - pdf-check is a smoke check for final output usability, not a full-document completeness audit.
+# - When PDF fallback uses VLM, only the first 10 pages are sampled.
+# - That 10-page sampling limit is fixed in the current design and is not configurable here.
 
 # Internationalization
 i18n:
