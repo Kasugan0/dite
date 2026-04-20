@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 
 import httpx
@@ -15,7 +16,12 @@ from dite.core.embedder import get_embedding_cache_version
 from dite.core.pipeline import PipelineOptions, PipelineService
 from dite.core.scanner import scan_files
 from dite.extractors.base import ExtractionResult
-from dite.extractors.router import PDF_VLM_SAMPLE_PAGE_LIMIT, VLMSamplingResult
+from dite.extractors.router import (
+    PDFProfile,
+    PDF_VLM_SAMPLE_PAGE_LIMIT,
+    ResolvedExtraction,
+    VLMSamplingResult,
+)
 from dite.i18n import set_locale
 from dite.utils.hashing import compute_file_hash
 from dite.utils.logging import setup_logging
@@ -470,6 +476,185 @@ def test_pipeline_real_scan_extract_and_cache_hits(tmp_path: Path, monkeypatch) 
     cache.close()
 
 
+def test_extract_files_locks_down_failure_corpus_classification_baseline(
+    tmp_path: Path, monkeypatch
+) -> None:
+    files: list[Path] = []
+    names = [*(f"failed-{index}.pdf" for index in range(1, 8)), "weak-1.pdf", "weak-2.pdf"]
+    for name in names:
+        path = tmp_path / name
+        path.write_bytes(f"%PDF-1.7 {name}".encode("utf-8"))
+        files.append(path)
+
+    service = PipelineService(client=object(), config=Config(), cache=None)
+
+    def fake_resolve_document_extraction(
+        file_path: Path,
+        client,
+        *,
+        enable_vlm_fallback=True,
+        allow_vlm_api=True,
+        cached_vlm_content=None,
+        primary_result=None,
+        registry=None,
+        config=None,
+    ) -> ResolvedExtraction:
+        del (
+            client,
+            enable_vlm_fallback,
+            allow_vlm_api,
+            cached_vlm_content,
+            primary_result,
+            registry,
+            config,
+        )
+        is_failed = file_path.name.startswith("failed-")
+        primary_content = "" if is_failed else ("/G25/G26/G27/G28 " * 20 + "题目")
+        primary_success = not is_failed
+        primary_error = "parser failed" if is_failed else None
+        reason = "parser_timeout_or_broken" if is_failed else "glyph_noise_dominates"
+        profile_kind = "parser_timeout_or_broken" if is_failed else "weak_text"
+        page_calls = 10 if is_failed else 6
+        final_content = f"{file_path.stem} final content " * 20
+
+        return ResolvedExtraction(
+            primary_result=ExtractionResult(
+                content=primary_content,
+                success=primary_success,
+                extractor="docling",
+                error=primary_error,
+            ),
+            primary_effective_length=0 if is_failed else 2,
+            pdf_profile=PDFProfile(
+                kind=profile_kind,
+                effective_length=0 if is_failed else 2,
+                glyph_noise_tokens=0 if is_failed else 20,
+                glyph_noise_ratio=0.0 if is_failed else 0.9,
+                needs_vlm_fallback=True,
+                success=primary_success,
+                reason=reason,
+            ),
+            fallback_needed=True,
+            selected_source="vlm_api",
+            final_content=final_content,
+            final_effective_length=len(final_content),
+            vlm_content=final_content,
+            vlm_source="api",
+            vlm_api_success=True,
+            vlm_api_page_calls=page_calls,
+            sample_page_limit=PDF_VLM_SAMPLE_PAGE_LIMIT,
+        )
+
+    monkeypatch.setattr(
+        "dite.core.pipeline.resolve_document_extraction",
+        fake_resolve_document_extraction,
+    )
+
+    result = service.extract_files(
+        files,
+        PipelineOptions(use_cache=False, use_embedding_cache=False),
+    )
+
+    assert len(result.file_reports) == 9
+    assert result.extraction.primary_failures == 7
+    assert result.extraction.source_fallback_needed == 9
+    assert result.extraction.selected_vlm_files == 9
+    assert result.extraction.vlm_api_page_calls == 82
+    assert result.extraction.duplicate_count == 0
+    assert {report.source_profile for report in result.file_reports} == {
+        "parser_timeout_or_broken",
+        "weak_text",
+    }
+    assert all(report.selected_source == "vlm_api" for report in result.file_reports)
+    assert all(
+        report.sample_page_limit == PDF_VLM_SAMPLE_PAGE_LIMIT
+        for report in result.file_reports
+    )
+    assert all(report.final_effective_length >= 100 for report in result.file_reports)
+
+
+def test_extract_files_detects_real_duplicate_group_without_cache(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fixture_dir = Path(__file__).resolve().parents[1] / "docs" / "test"
+    duplicate_names = [
+        "2506.12116v3.pdf",
+        "2506.12116v3 (1).pdf",
+        "2506.12116v3 (2).pdf",
+    ]
+    files: list[Path] = []
+    for name in duplicate_names:
+        copied = tmp_path / name
+        shutil.copy2(fixture_dir / name, copied)
+        files.append(copied)
+
+    service = PipelineService(client=object(), config=Config(), cache=None)
+
+    def fake_resolve_document_extraction(
+        file_path: Path,
+        client,
+        *,
+        enable_vlm_fallback=True,
+        allow_vlm_api=True,
+        cached_vlm_content=None,
+        primary_result=None,
+        registry=None,
+        config=None,
+    ) -> ResolvedExtraction:
+        del (
+            client,
+            enable_vlm_fallback,
+            allow_vlm_api,
+            cached_vlm_content,
+            primary_result,
+            registry,
+            config,
+        )
+        final_content = f"{file_path.name} usable content " * 20
+        return ResolvedExtraction(
+            primary_result=ExtractionResult(
+                content=final_content,
+                success=True,
+                extractor="docling",
+            ),
+            primary_effective_length=len(final_content),
+            pdf_profile=PDFProfile(
+                kind="native_text",
+                effective_length=len(final_content),
+                glyph_noise_tokens=0,
+                glyph_noise_ratio=0.0,
+                needs_vlm_fallback=False,
+                success=True,
+                reason="usable_text_layer",
+            ),
+            fallback_needed=False,
+            selected_source="primary",
+            final_content=final_content,
+            final_effective_length=len(final_content),
+            vlm_content=None,
+            vlm_source=None,
+            vlm_api_success=False,
+            vlm_api_page_calls=0,
+            sample_page_limit=None,
+        )
+
+    monkeypatch.setattr(
+        "dite.core.pipeline.resolve_document_extraction",
+        fake_resolve_document_extraction,
+    )
+
+    result = service.extract_files(
+        files,
+        PipelineOptions(use_cache=False, use_embedding_cache=False),
+    )
+
+    assert result.extraction.duplicate_count == 2
+    assert len(result.extraction.duplicate_groups) == 1
+    duplicate_group = next(iter(result.extraction.duplicate_groups.values()))
+    assert {Path(path).name for path in duplicate_group} == set(duplicate_names)
+    assert len({report.file_hash for report in result.file_reports}) == 1
+
+
 def test_pipeline_recomputes_embedding_when_model_changes(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -690,6 +875,81 @@ def test_pipeline_uses_smart_content_excerpt_for_embedding(
     assert "OWNERSHIP" in excerpt
     assert "INDEX" in excerpt
     assert captured["file_names"] == ["book.pdf"]
+
+
+def test_extract_files_preserves_final_length_separately_from_truncated_contents(
+    tmp_path: Path, monkeypatch
+) -> None:
+    doc = tmp_path / "long.pdf"
+    doc.write_bytes(b"%PDF-1.7 long")
+
+    config = Config()
+    config.processing.text_truncate_limit = 80
+    service = PipelineService(client=object(), config=config, cache=None)
+    final_content = ("COVER " * 40) + ("RUST OWNERSHIP " * 20) + ("INDEX " * 40)
+
+    def fake_resolve_document_extraction(
+        file_path: Path,
+        client,
+        *,
+        enable_vlm_fallback=True,
+        allow_vlm_api=True,
+        cached_vlm_content=None,
+        primary_result=None,
+        registry=None,
+        config=None,
+    ) -> ResolvedExtraction:
+        del (
+            file_path,
+            client,
+            enable_vlm_fallback,
+            allow_vlm_api,
+            cached_vlm_content,
+            primary_result,
+            registry,
+            config,
+        )
+        return ResolvedExtraction(
+            primary_result=ExtractionResult(
+                content=final_content,
+                success=True,
+                extractor="docling",
+            ),
+            primary_effective_length=len(final_content),
+            pdf_profile=PDFProfile(
+                kind="native_text",
+                effective_length=len(final_content),
+                glyph_noise_tokens=0,
+                glyph_noise_ratio=0.0,
+                needs_vlm_fallback=False,
+                success=True,
+                reason="usable_text_layer",
+            ),
+            fallback_needed=False,
+            selected_source="primary",
+            final_content=final_content,
+            final_effective_length=len(final_content),
+            vlm_content=None,
+            vlm_source=None,
+            vlm_api_success=False,
+            vlm_api_page_calls=0,
+            sample_page_limit=None,
+        )
+
+    monkeypatch.setattr(
+        "dite.core.pipeline.resolve_document_extraction",
+        fake_resolve_document_extraction,
+    )
+
+    result = service.extract_files(
+        [doc],
+        PipelineOptions(use_cache=False, use_embedding_cache=False),
+    )
+
+    assert len(result.contents) == 1
+    assert len(result.contents[0]) <= config.processing.text_truncate_limit
+    assert result.file_reports[0].final_effective_length == len(final_content)
+    assert result.file_reports[0].excerpt_was_truncated is True
 
 
 def test_knn_repair_keeps_far_noise_with_threshold() -> None:
