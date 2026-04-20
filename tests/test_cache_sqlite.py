@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -274,3 +275,44 @@ def test_get_stats_counts_current_and_stale_embeddings(tmp_path: Path) -> None:
     assert stats["stale_embeddings"] == 1
     assert stats["current_embedding_version"] == "embed-v1|input=current"
     cache.close()
+
+
+def test_file_cache_uses_distinct_connections_per_thread_and_closes_all(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "cache.db"
+    cache = FileCache(db_path=db_path)
+    connections: list[sqlite3.Connection] = []
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(3)
+
+    def worker() -> None:
+        try:
+            conn = cache._get_conn()
+            connections.append(conn)
+            barrier.wait()
+        except BaseException as exc:  # pragma: no cover - test helper
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+
+    main_conn = cache._get_conn()
+    connections.append(main_conn)
+    barrier.wait()
+
+    for thread in threads:
+        thread.join()
+
+    assert not errors
+    assert len({id(conn) for conn in connections}) == 3
+
+    cache.close()
+
+    for conn in connections:
+        try:
+            conn.execute("SELECT 1")
+        except sqlite3.ProgrammingError:
+            continue
+        raise AssertionError("connection should be closed by FileCache.close()")

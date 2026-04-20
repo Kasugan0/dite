@@ -192,6 +192,7 @@ def _link_real_docling_models_into_home(home_dir: Path, source_models_dir: Path)
 
 def test_real_api_embeddings_smoke() -> None:
     client, embed_model, _ = _real_api_settings()
+    config = load_config()
     try:
         vectors = get_embeddings(
             client=client,
@@ -199,6 +200,7 @@ def test_real_api_embeddings_smoke() -> None:
                 "机器学习课程讲义，内容包括线性回归和梯度下降。",
                 "财务报表分析，包含利润表、资产负债表和现金流量表。",
             ],
+            config=config,
             file_names=["ml-notes.txt", "finance-notes.txt"],
             embedding_model=embed_model,
         )
@@ -216,6 +218,7 @@ def test_real_api_embeddings_smoke() -> None:
 
 def test_real_api_embeddings_keep_same_topic_closer_than_cross_topic() -> None:
     client, embed_model, _ = _real_api_settings()
+    config = load_config()
     texts = [
         "机器学习课程讲义，内容包括线性回归、梯度下降和交叉验证。",
         "深度学习笔记，讨论神经网络、反向传播和卷积网络。",
@@ -225,6 +228,7 @@ def test_real_api_embeddings_keep_same_topic_closer_than_cross_topic() -> None:
     vectors = get_embeddings(
         client=client,
         texts=texts,
+        config=config,
         file_names=[
             "ml_regression.txt",
             "ml_deep_learning.md",
@@ -253,6 +257,7 @@ def test_real_api_embeddings_keep_same_topic_closer_than_cross_topic() -> None:
 
 def test_real_api_cluster_name_smoke() -> None:
     client, _, llm_model = _real_api_settings()
+    config = load_config()
     name = generate_cluster_name(
         client=client,
         cluster_embeddings=None,
@@ -260,6 +265,7 @@ def test_real_api_cluster_name_smoke() -> None:
             "这批文档主要讨论机器学习中的监督学习、模型评估和特征工程。"
         ],
         sample_names=["ml_overview.md"],
+        config=config,
         llm_model=llm_model,
     )
 
@@ -270,6 +276,7 @@ def test_real_api_cluster_name_smoke() -> None:
 
 def test_real_api_cluster_names_differ_for_distinct_topics() -> None:
     client, embed_model, llm_model = _real_api_settings()
+    config = load_config()
     texts = [
         "机器学习课程讲义，内容包括线性回归、梯度下降和交叉验证。",
         "深度学习笔记，讨论神经网络、反向传播和卷积网络。",
@@ -279,6 +286,7 @@ def test_real_api_cluster_names_differ_for_distinct_topics() -> None:
     vectors = get_embeddings(
         client=client,
         texts=texts,
+        config=config,
         file_names=[
             "ml_regression.txt",
             "ml_deep_learning.md",
@@ -293,6 +301,7 @@ def test_real_api_cluster_names_differ_for_distinct_topics() -> None:
         cluster_embeddings=vectors[:2],
         sample_contents=texts[:2],
         sample_names=["ml_regression.txt", "ml_deep_learning.md"],
+        config=config,
         llm_model=llm_model,
     )
     finance_name = generate_cluster_name(
@@ -300,6 +309,7 @@ def test_real_api_cluster_names_differ_for_distinct_topics() -> None:
         cluster_embeddings=vectors[2:],
         sample_contents=texts[2:],
         sample_names=["finance_statement.txt", "finance_valuation.md"],
+        config=config,
         llm_model=llm_model,
     )
 

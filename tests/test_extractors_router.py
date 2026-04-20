@@ -64,7 +64,7 @@ class _Registry:
     def get_text(self) -> BaseExtractor:
         return self.text
 
-    def get_vlm(self, client=None) -> BaseExtractor:
+    def get_vlm(self) -> BaseExtractor:
         return self.vlm
 
 
@@ -128,23 +128,23 @@ def test_get_extractor_routes_by_real_type_and_extension(
 
     image = tmp_path / "image.png"
     image.write_bytes(b"img")
-    assert get_extractor(image, registry=registry) is registry.vlm
+    assert get_extractor(image, config=Config(), registry=registry) is registry.vlm
 
     text = tmp_path / "notes.txt"
     text.write_text("hello", encoding="utf-8")
-    assert get_extractor(text, registry=registry) is registry.text
+    assert get_extractor(text, config=Config(), registry=registry) is registry.text
 
     wrong_suffix_ooxml = tmp_path / "slides.ppt"
     wrong_suffix_ooxml.write_bytes(b"PK\x03\x04fake")
-    assert get_extractor(wrong_suffix_ooxml, registry=registry) is registry.docling
+    assert get_extractor(wrong_suffix_ooxml, config=Config(), registry=registry) is registry.docling
 
     old_office = tmp_path / "legacy.docx"
     old_office.write_bytes(b"\xd0\xcf\x11\xe0fake")
-    assert get_extractor(old_office, registry=registry) is registry.markitdown
+    assert get_extractor(old_office, config=Config(), registry=registry) is registry.markitdown
 
     pdf = tmp_path / "paper.bin"
     pdf.write_bytes(b"%PDF-1.7")
-    assert get_extractor(pdf, registry=registry) is registry.docling
+    assert get_extractor(pdf, config=Config(), registry=registry) is registry.docling
 
     unknown = tmp_path / "archive.xyz"
     unknown.write_bytes(b"1234")
@@ -152,7 +152,7 @@ def test_get_extractor_routes_by_real_type_and_extension(
         "dite.extractors.router._detect_real_type",
         lambda path: "unknown",
     )
-    assert get_extractor(unknown, registry=registry) is None
+    assert get_extractor(unknown, config=Config(), registry=registry) is None
 
 
 def test_extract_document_returns_failure_for_unsupported_file(
@@ -166,7 +166,11 @@ def test_extract_document_returns_failure_for_unsupported_file(
     file_path = tmp_path / "unsupported.xyz"
     file_path.write_text("payload", encoding="utf-8")
 
-    result = extract_document(file_path, registry=_Registry())
+    cfg = Config()
+    cfg.i18n.locale = "zh-CN"
+    set_locale("zh-CN")
+
+    result = extract_document(file_path, config=cfg, registry=_Registry())
 
     assert result.success is False
     assert result.extractor == "none"
@@ -178,6 +182,7 @@ def test_extract_document_error_follows_passed_config_locale(tmp_path: Path) -> 
     file_path.write_text("payload", encoding="utf-8")
     cfg = Config()
     cfg.i18n.locale = "en"
+    set_locale("en")
 
     result = extract_document(file_path, registry=_Registry(), config=cfg)
 
@@ -193,6 +198,32 @@ def test_extractor_registry_passes_docling_pdf_timeout() -> None:
     extractor = ExtractorRegistry(cfg).get_docling()
 
     assert extractor._pdf_timeout_sec == 12.5
+
+
+def test_get_extractor_keeps_registry_bound_vlm_client(tmp_path: Path) -> None:
+    image = tmp_path / "image.png"
+    image.write_bytes(b"img")
+    cfg = Config()
+
+    calls_a: list[dict] = []
+    calls_b: list[dict] = []
+    client_a = _FakeClient("client-a", calls_a)
+    client_b = _FakeClient("client-b", calls_b)
+    registry = ExtractorRegistry(cfg, client=client_a)
+
+    extractor = get_extractor(
+        image,
+        client=client_b,
+        config=cfg,
+        registry=registry,
+    )
+
+    assert isinstance(extractor, VLMExtractor)
+    result = extractor.extract(image)
+
+    assert result.content == "client-a"
+    assert len(calls_a) == 1
+    assert not calls_b
 
 
 def test_needs_vlm_fallback_only_for_short_pdf() -> None:
@@ -239,6 +270,7 @@ def test_classify_pdf_profile_for_native_text() -> None:
     profile = classify_pdf_profile(
         "This is a readable PDF text layer." * 10,
         Path("paper.pdf"),
+        config=Config(),
         success=True,
         vlm_fallback_threshold=100,
     )
@@ -253,6 +285,7 @@ def test_classify_pdf_profile_for_scanned_image() -> None:
     profile = classify_pdf_profile(
         "",
         Path("scan.pdf"),
+        config=Config(),
         success=True,
         vlm_fallback_threshold=100,
     )
@@ -267,6 +300,7 @@ def test_classify_pdf_profile_for_weak_glyph_noise() -> None:
     profile = classify_pdf_profile(
         "/G25/G26/G27/G28 " * 20 + "题目",
         Path("noisy.pdf"),
+        config=Config(),
         success=True,
         vlm_fallback_threshold=20,
     )
@@ -281,6 +315,7 @@ def test_classify_pdf_profile_for_mixed_pdf() -> None:
     profile = classify_pdf_profile(
         ("正常正文内容" * 80) + " /G25/G26",
         Path("mixed.pdf"),
+        config=Config(),
         success=True,
         vlm_fallback_threshold=100,
     )
@@ -295,6 +330,7 @@ def test_classify_pdf_profile_for_parser_failure() -> None:
     profile = classify_pdf_profile(
         "",
         Path("broken.pdf"),
+        config=Config(),
         success=False,
         error="timeout>60s",
         vlm_fallback_threshold=100,
@@ -489,11 +525,13 @@ def test_vlm_extractor_handles_missing_client_and_success(tmp_path: Path) -> Non
 
     cfg = Config()
     cfg.i18n.locale = "en"
+    set_locale("en")
     no_client = VLMExtractor(cfg, client=None).extract(image_path)
     assert no_client.success is False
     assert no_client.error == "VLM client is not initialized"
 
     calls: list[dict] = []
+    set_locale("en")
     extractor = VLMExtractor(cfg, client=_FakeClient("image summary", calls))
     result = extractor.extract(image_path)
 
@@ -513,7 +551,7 @@ def test_vlm_extractor_uses_zh_prompt_when_locale_is_zh(tmp_path: Path) -> None:
 
     cfg = Config()
     cfg.i18n.locale = "zh-CN"
-    set_locale("en")
+    set_locale("zh-CN")
 
     calls: list[dict] = []
     extractor = VLMExtractor(cfg, client=_FakeClient("图像摘要", calls))
