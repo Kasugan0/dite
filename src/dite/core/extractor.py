@@ -4,12 +4,15 @@ from pathlib import Path
 
 from openai import OpenAI
 
+from dite.config import Config
 from dite.extractors import extract_content as _extract_content
 
 
 def extract_content(
     file_path: Path,
     client: OpenAI | None = None,
+    *,
+    config: Config,
     truncate_limit: int | None = None,
 ) -> str:
     """
@@ -25,4 +28,9 @@ def extract_content(
     Returns:
         提取的内容（可能被截断）
     """
-    return _extract_content(file_path, client, truncate_limit)
+    return _extract_content(
+        file_path,
+        client,
+        config=config,
+        truncate_limit=truncate_limit,
+    )
