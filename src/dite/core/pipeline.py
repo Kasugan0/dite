@@ -7,7 +7,7 @@ import numpy as np
 from openai import OpenAI
 
 from dite.cache import VLM_CACHE_VERSION, FileCache
-from dite.config import Config, load_config
+from dite.config import Config
 from dite.extractors import (
     ExtractorRegistry,
     get_extractor,
@@ -91,22 +91,22 @@ class PipelineService:
     def __init__(
         self,
         client: OpenAI,
-        config: Config | None = None,
+        *,
+        config: Config,
         cache: FileCache | None = None,
-        extractor_registry: ExtractorRegistry | None = None,
     ) -> None:
         self.client = client
-        self.config = config or load_config()
+        self.config = config
         self.cache = cache
-        self.extractor_registry = extractor_registry or ExtractorRegistry(
-            config=self.config,
-            client=client,
-        )
         self.logger = get_logger()
+
+    def _make_extractor_registry(self) -> ExtractorRegistry:
+        return ExtractorRegistry(config=self.config, client=self.client)
 
     def run(self, folder: Path, options: PipelineOptions) -> PipelineResult:
         files = scan_files(
             folder,
+            config=self.config,
             extensions=self.config.formats.all_extensions,
             exclude_paths=options.exclude_paths,
         )
@@ -127,6 +127,7 @@ class PipelineService:
         embeddings = self._vectorize(files, file_hashes, contents, options)
         labels, noise_repaired = cluster_documents(
             embeddings,
+            config=self.config,
             repair_noise=options.repair_noise,
             clustering=self.config.clustering,
             item_names=[file.name for file in files],
@@ -136,10 +137,10 @@ class PipelineService:
             labels,
             contents,
             files,
-            embeddings,
+            config=self.config,
+            embeddings=embeddings,
             merge_same_name=options.merge_same_name,
             llm_model=self.config.models.llm,
-            config=self.config,
         )
 
         return PipelineResult(
@@ -193,6 +194,7 @@ class PipelineService:
         summary = ExtractionSummary()
         hash_to_files: dict[str, list[str]] = {}
         truncate_limit = self.config.processing.text_truncate_limit
+        extractor_registry = self._make_extractor_registry()
 
         for file in files:
             self.logger.debug(t("debug_extract_processing_file", path=file))
@@ -212,8 +214,8 @@ class PipelineService:
                     extractor = get_extractor(
                         file,
                         self.client,
-                        registry=self.extractor_registry,
                         config=self.config,
+                        registry=extractor_registry,
                     )
                     primary_result = self._build_cached_primary_result(
                         file,
@@ -248,12 +250,12 @@ class PipelineService:
             resolved = resolve_document_extraction(
                 file,
                 self.client,
+                config=self.config,
                 enable_vlm_fallback=True,
                 allow_vlm_api=options.allow_vlm_api,
                 cached_vlm_content=cached_vlm_content,
                 primary_result=primary_result,
-                registry=self.extractor_registry,
-                config=self.config,
+                registry=extractor_registry,
             )
 
             if (
@@ -403,7 +405,8 @@ class PipelineService:
                 new_embeddings = get_embeddings(
                     self.client,
                     need_embedding_contents,
-                    file_names,
+                    config=self.config,
+                    file_names=file_names,
                     embedding_model=embedding_model,
                 )
 
@@ -427,6 +430,7 @@ class PipelineService:
         return get_embeddings(
             self.client,
             contents,
-            file_names,
+            config=self.config,
+            file_names=file_names,
             embedding_model=self.config.models.embedding,
         )
