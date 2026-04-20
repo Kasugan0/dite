@@ -6,7 +6,7 @@ from pathlib import Path
 from openai import OpenAI
 
 from dite.config import Config
-from dite.i18n import get_locale, set_locale, t
+from dite.i18n import get_locale, t
 
 from .base import BaseExtractor, ExtractionResult
 
@@ -49,13 +49,8 @@ class VLMExtractor(BaseExtractor):
         self._config = config
         self._client = client
 
-    def set_client(self, client: OpenAI):
-        """设置 OpenAI 客户端"""
-        self._client = client
-
     def extract(self, file_path: Path) -> ExtractionResult:
         """使用 VLM 描述图片"""
-        set_locale(self._config.i18n.locale)
         if self._client is None:
             return ExtractionResult(
                 content="",

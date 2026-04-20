@@ -8,8 +8,8 @@ from typing import Literal
 
 from openai import OpenAI
 
-from dite.config import Config, load_config
-from dite.i18n import get_locale, set_locale, t
+from dite.config import Config
+from dite.i18n import get_locale, t
 from dite.utils.logging import get_logger
 
 from .base import BaseExtractor, ExtractionResult
@@ -76,18 +76,11 @@ class ExtractorRegistry:
 
     def __init__(self, config: Config, client: OpenAI | None = None) -> None:
         self.config = config
+        self._client = client
         self._docling: DoclingExtractor | None = None
         self._markitdown: MarkItDownExtractor | None = None
         self._text: TextExtractor | None = None
         self._vlm: VLMExtractor | None = None
-        if client is not None:
-            self.set_client(client)
-
-    def set_client(self, client: OpenAI) -> None:
-        if self._vlm is None:
-            self._vlm = VLMExtractor(config=self.config, client=client)
-            return
-        self._vlm.set_client(client)
 
     def get_docling(self) -> DoclingExtractor:
         if self._docling is None:
@@ -106,23 +99,10 @@ class ExtractorRegistry:
             self._text = TextExtractor()
         return self._text
 
-    def get_vlm(self, client: OpenAI | None = None) -> VLMExtractor:
+    def get_vlm(self) -> VLMExtractor:
         if self._vlm is None:
-            self._vlm = VLMExtractor(config=self.config, client=client)
-        elif client is not None:
-            self._vlm.set_client(client)
+            self._vlm = VLMExtractor(config=self.config, client=self._client)
         return self._vlm
-
-
-def _default_registry(config: Config | None = None) -> ExtractorRegistry:
-    return ExtractorRegistry(config=_resolve_config(config))
-
-
-def _resolve_config(config: Config | None) -> Config:
-    """Load effective config and keep i18n locale in sync for library callers."""
-    cfg = config or load_config()
-    set_locale(cfg.i18n.locale)
-    return cfg
 
 
 def _build_vlm_fallback_prompt(page_num: int) -> str:
@@ -398,8 +378,9 @@ def _extract_pdf_with_vlm_sampling(
 def get_extractor(
     file_path: Path,
     client: OpenAI | None = None,
+    *,
+    config: Config,
     registry: ExtractorRegistry | None = None,
-    config: Config | None = None,
 ) -> BaseExtractor | None:
     """
     根据文件类型获取合适的提取器
@@ -412,12 +393,12 @@ def get_extractor(
        - OLE (真正的旧版 Office) → MarkItDown
     4. 扩展名回退
     """
-    reg = registry or _default_registry(config)
+    reg = registry or ExtractorRegistry(config=config, client=client)
     suffix = file_path.suffix.lower()
 
     # 图片 → VLM
     if suffix in VLMExtractor.MIME_TYPES:
-        return reg.get_vlm(client)
+        return reg.get_vlm()
 
     # 纯文本 → Text
     text_ext = reg.get_text()
@@ -499,10 +480,10 @@ def classify_pdf_profile(
     content: str,
     file_path: Path,
     *,
+    config: Config,
     success: bool,
     error: str | None = None,
     vlm_fallback_threshold: int | None = None,
-    config: Config | None = None,
 ) -> PDFProfile | None:
     """Classify a PDF by the processing path DITE should use."""
     if file_path.suffix.lower() != ".pdf":
@@ -510,8 +491,7 @@ def classify_pdf_profile(
 
     threshold = vlm_fallback_threshold
     if threshold is None:
-        cfg = config or load_config()
-        threshold = cfg.processing.vlm_fallback_threshold
+        threshold = config.processing.vlm_fallback_threshold
 
     effective_length = _compute_effective_content_length(content)
     glyph_noise_tokens = _count_pdf_glyph_noise_tokens(content)
@@ -531,8 +511,8 @@ def classify_pdf_profile(
     needs_fallback = needs_vlm_fallback(
         content,
         file_path,
-        vlm_fallback_threshold=vlm_fallback_threshold,
         config=config,
+        vlm_fallback_threshold=vlm_fallback_threshold,
     )
     if effective_length == 0:
         return PDFProfile(
@@ -592,8 +572,9 @@ def classify_pdf_profile(
 def extract_document(
     file_path: Path,
     client: OpenAI | None = None,
+    *,
+    config: Config,
     registry: ExtractorRegistry | None = None,
-    config: Config | None = None,
 ) -> ExtractionResult:
     """
     提取文档内容（仅文档转换，不含 VLM 回退）
@@ -608,13 +589,11 @@ def extract_document(
         ExtractionResult
     """
     logger = get_logger()
-    cfg = _resolve_config(config)
-
     extractor = get_extractor(
         file_path,
         client,
+        config=config,
         registry=registry,
-        config=cfg,
     )
 
     if extractor is None:
@@ -633,24 +612,23 @@ def resolve_document_extraction(
     file_path: Path,
     client: OpenAI | None = None,
     *,
+    config: Config,
     enable_vlm_fallback: bool = True,
     allow_vlm_api: bool = True,
     cached_vlm_content: str | None = None,
     primary_result: ExtractionResult | None = None,
     registry: ExtractorRegistry | None = None,
-    config: Config | None = None,
 ) -> ResolvedExtraction:
     """Resolve primary extraction, PDF fallback, and final content selection."""
     logger = get_logger()
-    cfg = _resolve_config(config)
 
     resolved_primary = primary_result
     if resolved_primary is None:
         resolved_primary = extract_document(
             file_path,
             client,
+            config=config,
             registry=registry,
-            config=cfg,
         )
         logger.debug(
             t(
@@ -673,10 +651,10 @@ def resolve_document_extraction(
     pdf_profile = classify_pdf_profile(
         primary_content,
         file_path,
+        config=config,
         success=normalized_primary.success,
         error=normalized_primary.error,
-        vlm_fallback_threshold=cfg.processing.vlm_fallback_threshold,
-        config=cfg,
+        vlm_fallback_threshold=config.processing.vlm_fallback_threshold,
     )
     fallback_needed = False
     final_content = primary_content
@@ -703,7 +681,7 @@ def resolve_document_extraction(
                 "debug_extract_vlm_check",
                 suffix=file_path.suffix.lower(),
                 effective_length=primary_effective_length,
-                threshold=cfg.processing.vlm_fallback_threshold,
+                threshold=config.processing.vlm_fallback_threshold,
                 needed=fallback_needed,
             )
         )
@@ -721,7 +699,7 @@ def resolve_document_extraction(
 
         if fallback_needed and vlm_content is None and allow_vlm_api:
             logger.debug(t("debug_extract_vlm_api_call"))
-            sampling = _extract_pdf_with_vlm_sampling(file_path, client, config=cfg)
+            sampling = _extract_pdf_with_vlm_sampling(file_path, client, config=config)
             vlm_result = sampling.result
             vlm_api_page_calls = sampling.api_page_calls
             logger.debug(
@@ -776,8 +754,9 @@ def resolve_document_extraction(
 def needs_vlm_fallback(
     content: str,
     file_path: Path,
+    *,
+    config: Config,
     vlm_fallback_threshold: int | None = None,
-    config: Config | None = None,
 ) -> bool:
     """
     判断是否需要 VLM 回退
@@ -791,8 +770,7 @@ def needs_vlm_fallback(
     """
     threshold = vlm_fallback_threshold
     if threshold is None:
-        cfg = config or load_config()
-        threshold = cfg.processing.vlm_fallback_threshold
+        threshold = config.processing.vlm_fallback_threshold
 
     # 仅对 PDF 生效
     if file_path.suffix.lower() != ".pdf":
@@ -809,7 +787,8 @@ def needs_vlm_fallback(
 def extract_with_vlm_fallback(
     file_path: Path,
     client: OpenAI,
-    config: Config | None = None,
+    *,
+    config: Config,
 ) -> ExtractionResult:
     """
     使用 VLM 提取 PDF 内容（多页）
@@ -821,16 +800,16 @@ def extract_with_vlm_fallback(
     Returns:
         ExtractionResult
     """
-    cfg = _resolve_config(config)
-    return _extract_pdf_with_vlm_sampling(file_path, client, config=cfg).result
+    return _extract_pdf_with_vlm_sampling(file_path, client, config=config).result
 
 
 def extract_content(
     file_path: Path,
     client: OpenAI | None = None,
+    *,
+    config: Config,
     truncate_limit: int | None = None,
     enable_vlm_fallback: bool = True,
-    config: Config | None = None,
     registry: ExtractorRegistry | None = None,
 ) -> str:
     """
@@ -845,17 +824,15 @@ def extract_content(
     Returns:
         提取的文本内容
     """
-    cfg = _resolve_config(config)
-
     if truncate_limit is None:
-        truncate_limit = cfg.processing.text_truncate_limit
+        truncate_limit = config.processing.text_truncate_limit
 
     resolved = resolve_document_extraction(
         file_path,
         client,
+        config=config,
         enable_vlm_fallback=enable_vlm_fallback,
         allow_vlm_api=True,
         registry=registry,
-        config=cfg,
     )
     return resolved.final_content[:truncate_limit]

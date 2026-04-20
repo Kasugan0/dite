@@ -2,6 +2,7 @@
 
 import contextlib
 import sqlite3
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -69,15 +70,30 @@ class FileCache:
         if max_size_gb is not None and max_size_gb > 0:
             self.max_size_bytes = int(max_size_gb * 1024 * 1024 * 1024)
 
-        self._conn: sqlite3.Connection | None = None
+        self._conn_lock = threading.Lock()
+        self._connections: dict[int, sqlite3.Connection] = {}
+        self._local = threading.local()
         self._init_db()
+
+    def _create_conn(self) -> sqlite3.Connection:
+        # Connections are still used worker-locally, but disabling the thread check
+        # lets the owner object close them centrally after worker threads finish.
+        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
 
     def _get_conn(self) -> sqlite3.Connection:
         """获取数据库连接"""
-        if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path))
-            self._conn.row_factory = sqlite3.Row
-        return self._conn
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            return conn
+
+        conn = self._create_conn()
+        thread_id = threading.get_ident()
+        with self._conn_lock:
+            self._connections[thread_id] = conn
+        self._local.conn = conn
+        return conn
 
     def _init_db(self) -> None:
         """初始化数据库表"""
@@ -539,6 +555,11 @@ class FileCache:
 
     def close(self) -> None:
         """关闭数据库连接"""
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        with self._conn_lock:
+            connections = list(self._connections.values())
+            self._connections = {}
+
+        for conn in connections:
+            conn.close()
+
+        self._local = threading.local()
