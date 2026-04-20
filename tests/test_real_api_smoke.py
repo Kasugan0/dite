@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +14,10 @@ from dite.config import load_config
 from dite.core.clusterer import generate_cluster_name
 from dite.core.embedder import get_embeddings
 from dite.core.pipeline import PipelineOptions, PipelineService
+from dite.extractors.docling import (
+    get_docling_pdf_artifacts_path,
+    has_docling_pdf_artifacts,
+)
 
 
 def _real_api_config_values() -> tuple[str, str, str, str, str, str]:
@@ -47,6 +52,53 @@ def _real_api_settings() -> tuple[OpenAI, str, str]:
     )
     client = OpenAI(api_key=api_key, base_url=base_url)
     return client, embed_model, llm_model
+
+
+def _require_real_pdf_corpus_enabled() -> Path:
+    if os.getenv("DITE_REAL_PDF_CORPUS") != "1":
+        pytest.skip("Set DITE_REAL_PDF_CORPUS=1 to run real PDF corpus regressions.")
+
+    if not has_docling_pdf_artifacts():
+        pytest.skip(
+            "Docling PDF models are not ready. Run `uv run dite setup docling-pdf` first."
+        )
+
+    corpus_dir = Path(__file__).resolve().parents[1] / "docs" / "test"
+    if not corpus_dir.exists():
+        pytest.skip("Missing docs/test corpus.")
+    return corpus_dir
+
+
+def _require_real_pdf_cli_enabled() -> None:
+    if os.getenv("DITE_REAL_PDF_CLI") != "1":
+        pytest.skip(
+            "Set DITE_REAL_PDF_CLI=1 to run the real pdf-check CLI corpus regression."
+        )
+
+
+def _real_failure_corpus_files(corpus_dir: Path) -> list[Path]:
+    names = [
+        "Linux-UNIX系统编程手册.pdf",
+        "Rust 程序设计.pdf",
+        "The-Art-of-Linear-Algebra-zh-CN.pdf",
+        "信息安全数学基础.pdf",
+        "抽象代数 - Algebra.pdf",
+        "线性代数 中文第5版【Gilbert Strang】.pdf",
+        "线性代数及其应用（第六版） - Linear Algebra and Its Applications.pdf",
+        "物理考后再练.pdf",
+        "线性代数及其应用 (David C. Lay Steven R. Lay Judi J. McDonald) (Z-Library).pdf",
+    ]
+    return [corpus_dir / name for name in names]
+
+
+def _real_pdf_check_fixture_files(corpus_dir: Path) -> list[Path]:
+    names = [
+        *[path.name for path in _real_failure_corpus_files(corpus_dir)],
+        "2506.12116v3.pdf",
+        "2506.12116v3 (1).pdf",
+        "2506.12116v3 (2).pdf",
+    ]
+    return [corpus_dir / name for name in names]
 
 
 def _average_pairwise_distance(vectors: np.ndarray, indices: list[int]) -> float:
@@ -102,6 +154,8 @@ def _write_topic_docs(root: Path) -> dict[str, list[Path]]:
 def _write_real_api_config(
     home_dir: Path,
     config_values: tuple[str, str, str, str, str, str],
+    *,
+    docling_pdf_timeout_sec: int = 60,
 ) -> None:
     api_key, base_url, embed_model, llm_model, vlm_model, locale = config_values
     config_path = home_dir / ".config" / "dite" / "config.yaml"
@@ -116,6 +170,8 @@ def _write_real_api_config(
                 f"  embedding: {embed_model}",
                 f"  vlm: {vlm_model}",
                 f"  llm: {llm_model}",
+                "processing:",
+                f"  docling_pdf_timeout_sec: {docling_pdf_timeout_sec}",
                 "cache:",
                 f"  directory: {home_dir / '.cache' / 'dite'}",
                 "i18n:",
@@ -124,6 +180,14 @@ def _write_real_api_config(
         ),
         encoding="utf-8",
     )
+
+
+def _link_real_docling_models_into_home(home_dir: Path, source_models_dir: Path) -> None:
+    target_models_dir = home_dir / ".cache" / "dite" / "docling" / "models"
+    target_models_dir.parent.mkdir(parents=True, exist_ok=True)
+    if target_models_dir.exists() or target_models_dir.is_symlink():
+        target_models_dir.unlink()
+    target_models_dir.symlink_to(source_models_dir)
 
 
 def test_real_api_embeddings_smoke() -> None:
@@ -323,3 +387,98 @@ def test_real_api_cli_scan_reports_markdown_files(
     assert report["summary"]["num_clusters"] >= 2
     assert "ml_classification.markdown" in reported_names
     assert "finance_accounting.markdown" in reported_names
+
+
+def test_real_api_extract_files_failure_corpus_matches_current_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    corpus_dir = _require_real_pdf_corpus_enabled()
+    source_models_dir = get_docling_pdf_artifacts_path()
+    config_values = _real_api_config_values()
+    home_dir = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home_dir))
+    _write_real_api_config(home_dir, config_values, docling_pdf_timeout_sec=15)
+    _link_real_docling_models_into_home(home_dir, source_models_dir)
+    client = OpenAI(api_key=config_values[0], base_url=config_values[1])
+    config = load_config()
+    service = PipelineService(client=client, config=config, cache=None)
+
+    result = service.extract_files(
+        _real_failure_corpus_files(corpus_dir),
+        PipelineOptions(
+            use_cache=False,
+            use_embedding_cache=False,
+            repair_noise=False,
+            merge_same_name=False,
+            allow_vlm_api=True,
+        ),
+    )
+
+    threshold = config.processing.vlm_fallback_threshold
+    weak_reports = [
+        report for report in result.file_reports if report.final_effective_length < threshold
+    ]
+    profile_counts = {
+        profile: sum(1 for report in result.file_reports if report.source_profile == profile)
+        for profile in {"parser_timeout_or_broken", "weak_text"}
+    }
+
+    assert len(result.files) == 9
+    assert result.extraction.primary_failures == 8
+    assert result.extraction.source_fallback_needed == 9
+    assert result.extraction.selected_vlm_files == 9
+    assert result.extraction.vlm_api_page_calls == 82
+    assert profile_counts == {
+        "parser_timeout_or_broken": 8,
+        "weak_text": 1,
+    }
+    assert not weak_reports
+    assert all(report.selected_source != "primary" for report in result.file_reports)
+    assert all(report.sample_page_limit == 10 for report in result.file_reports)
+
+
+def test_real_api_pdf_check_fixture_summary_matches_current_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    corpus_dir = _require_real_pdf_corpus_enabled()
+    source_models_dir = get_docling_pdf_artifacts_path()
+    _require_real_pdf_cli_enabled()
+    config_values = _real_api_config_values()
+    home_dir = tmp_path / "home"
+    fixture_dir = tmp_path / "fixture"
+    fixture_dir.mkdir()
+
+    monkeypatch.setenv("HOME", str(home_dir))
+    _write_real_api_config(
+        home_dir,
+        (
+            config_values[0],
+            config_values[1],
+            config_values[2],
+            config_values[3],
+            config_values[4],
+            "en",
+        ),
+        docling_pdf_timeout_sec=15,
+    )
+    _link_real_docling_models_into_home(home_dir, source_models_dir)
+
+    for source in _real_pdf_check_fixture_files(corpus_dir):
+        target = fixture_dir / source.name
+        target.symlink_to(source.resolve())
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["pdf-check", str(fixture_dir), "-v", "--no-cache"])
+
+    assert result.exit_code == 0
+    assert "Found 12 PDF files" in result.output
+    assert "primary failures:" in result.output
+    assert "fallback needed: 9" in result.output
+    assert "selected VLM: 9" in result.output
+    assert "VLM page calls: 82" in result.output
+    assert "duplicates: 2" in result.output
+    assert "weak: 0" in result.output
+    assert "empty: 0" in result.output
+    assert "VLM samples only the first 10 pages." in result.output
+    assert "PDF outputs passed the smoke check" in result.output
+    assert re.search(r"SUCCESS: 12 .*smoke check", result.output)
