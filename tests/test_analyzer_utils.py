@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from dite.cli import _build_report, _print_report
+from dite.config import Config
 from dite.core.analyzer import (
     DocumentAnalysis,
     analyze_and_build_payload,
@@ -91,7 +92,12 @@ def test_analyze_document_returns_default_after_invalid_json() -> None:
     calls: list[dict] = []
     client = _AnalyzerClient(["not-json", "still-not-json"], calls)
 
-    result = analyze_document(client, "example content", max_retries=2)
+    result = analyze_document(
+        client,
+        "example content",
+        config=Config(),
+        max_retries=2,
+    )
 
     assert result == DocumentAnalysis()
     assert len(calls) == 2
@@ -113,6 +119,7 @@ def test_analyze_document_uses_model_and_truncates_content() -> None:
     result = analyze_document(
         client,
         "x" * 20,
+        config=Config(),
         max_content_length=5,
         llm_model="custom-llm",
     )
@@ -158,14 +165,18 @@ def test_analyze_and_build_payload_combines_steps(monkeypatch) -> None:
 
     monkeypatch.setattr(
         "dite.core.analyzer.analyze_document",
-        lambda client, content: expected_analysis,
+        lambda client, content, *, config: expected_analysis,
     )
     monkeypatch.setattr(
         "dite.core.analyzer.build_weighted_payload",
         lambda analysis, raw_content: f"payload::{analysis.content.topic}::{raw_content}",
     )
 
-    analysis, payload = analyze_and_build_payload(object(), "raw body")
+    analysis, payload = analyze_and_build_payload(
+        object(),
+        "raw body",
+        config=Config(),
+    )
 
     assert analysis is expected_analysis
     assert payload == "payload::课程::raw body"
@@ -295,7 +306,12 @@ def test_analyze_document_logs_follow_locale(capsys) -> None:
     calls: list[dict] = []
     client = _AnalyzerClient(["not-json"], calls)
 
-    result = analyze_document(client, "example content", max_retries=1)
+    result = analyze_document(
+        client,
+        "example content",
+        config=Config(),
+        max_retries=1,
+    )
 
     output = capsys.readouterr().out
     assert result == DocumentAnalysis()

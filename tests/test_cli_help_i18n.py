@@ -16,6 +16,24 @@ def _run_cli(args: list[str], home: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_importing_cli_does_not_create_global_config(tmp_path: Path) -> None:
+    config_path = tmp_path / ".config" / "dite" / "config.yaml"
+    assert not config_path.exists()
+
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path)
+    result = subprocess.run(
+        [sys.executable, "-c", "import dite.cli"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert not config_path.exists()
+
+
 def test_help_uses_zh_cn_locale_from_config(tmp_path: Path) -> None:
     config_path = tmp_path / ".config" / "dite" / "config.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,3 +80,22 @@ def test_help_creates_global_config_when_missing(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert config_path.exists()
+
+
+def test_cache_help_uses_zh_cn_locale_from_config(tmp_path: Path) -> None:
+    config_path = tmp_path / ".config" / "dite" / "config.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "i18n:",
+                "  locale: zh-CN",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_cli(["cache", "--help"], tmp_path)
+
+    assert result.returncode == 0
+    assert "缓存管理" in result.stdout

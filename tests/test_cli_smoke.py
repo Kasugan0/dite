@@ -55,6 +55,21 @@ def test_dite_scan_help_with_en_us_locale(tmp_path: Path, monkeypatch) -> None:
     assert result.exit_code == 0
 
 
+def test_dite_help_uses_runtime_locale_after_import(tmp_path: Path, monkeypatch) -> None:
+    runner = CliRunner()
+    _write_test_config(tmp_path, monkeypatch, locale="en")
+
+    english = runner.invoke(app, ["--help"])
+    assert english.exit_code == 0
+    assert "Multimodal document intelligent clustering tool" in english.output
+
+    _write_test_config(tmp_path, monkeypatch, locale="zh-CN")
+    chinese = runner.invoke(app, ["--help"])
+
+    assert chinese.exit_code == 0
+    assert "多模态文件智能聚类工具" in chinese.output
+
+
 def test_dite_pdf_check_uses_pdf_only_and_stops_before_pipeline_scan(
     tmp_path: Path, monkeypatch
 ) -> None:

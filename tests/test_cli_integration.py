@@ -11,7 +11,11 @@ from dite.cache import FileCache
 from dite.cli import app
 from dite.core.pipeline import PipelineResult
 from dite.extractors.base import ExtractionResult
-from dite.extractors.router import PDF_VLM_SAMPLE_PAGE_LIMIT, PDFProfile, ResolvedExtraction
+from dite.extractors.router import (
+    PDF_VLM_SAMPLE_PAGE_LIMIT,
+    PDFProfile,
+    ResolvedExtraction,
+)
 from dite.utils.llm import format_api_error
 
 
@@ -47,13 +51,15 @@ def test_scan_cli_end_to_end_with_cache(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
 
     def fake_get_embeddings(
-        client, texts, file_names, embedding_model=None
+        client, texts, *, config=None, file_names=None, embedding_model=None
     ) -> np.ndarray:
         return np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32)
 
     def fake_cluster_documents(
         embeddings: np.ndarray,
         repair_noise: bool,
+        *,
+        config=None,
         clustering=None,
         item_names=None,
     ):
@@ -179,7 +185,7 @@ def test_scan_cli_reports_real_duplicate_fixture_groups_only_in_verbose(
         )
 
     def fake_get_embeddings(
-        client, texts, file_names, embedding_model=None
+        client, texts, *, config=None, file_names=None, embedding_model=None
     ) -> np.ndarray:
         del client, texts, file_names, embedding_model
         return np.array(
@@ -190,6 +196,8 @@ def test_scan_cli_reports_real_duplicate_fixture_groups_only_in_verbose(
     def fake_cluster_documents(
         embeddings: np.ndarray,
         repair_noise: bool,
+        *,
+        config=None,
         clustering=None,
         item_names=None,
     ):

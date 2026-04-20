@@ -1,3 +1,4 @@
+from dite.config import Config
 from dite.core.embedder import (
     ContentTruncator,
     get_embedding_cache_version,
@@ -37,7 +38,8 @@ def test_get_embeddings_includes_file_name_for_non_empty_text() -> None:
     result = get_embeddings(
         client,
         ["This document explains Rust ownership and borrowing."],
-        ["Rust 程序设计.pdf"],
+        config=Config(),
+        file_names=["Rust 程序设计.pdf"],
         embedding_model="embed-model",
     )
 

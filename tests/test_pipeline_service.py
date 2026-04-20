@@ -17,8 +17,8 @@ from dite.core.pipeline import PipelineOptions, PipelineService
 from dite.core.scanner import scan_files
 from dite.extractors.base import ExtractionResult
 from dite.extractors.router import (
-    PDFProfile,
     PDF_VLM_SAMPLE_PAGE_LIMIT,
+    PDFProfile,
     ResolvedExtraction,
     VLMSamplingResult,
 )
@@ -66,7 +66,7 @@ def test_pipeline_reuses_vlm_cache_across_runs(tmp_path: Path, monkeypatch) -> N
         )
 
     def fake_get_embeddings(
-        client, texts, file_names, embedding_model=None
+        client, texts, *, config=None, file_names=None, embedding_model=None
     ) -> np.ndarray:
         call_count["emb"] += 1
         return np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
@@ -74,6 +74,8 @@ def test_pipeline_reuses_vlm_cache_across_runs(tmp_path: Path, monkeypatch) -> N
     def fake_cluster_documents(
         embeddings: np.ndarray,
         repair_noise: bool,
+        *,
+        config=None,
         clustering=None,
         item_names=None,
     ):
@@ -210,6 +212,85 @@ def test_extract_files_can_disable_vlm_api(tmp_path: Path, monkeypatch) -> None:
     assert result.extraction.selected_vlm_files == 0
 
 
+def test_pipeline_service_creates_fresh_registry_per_extraction_batch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("alpha", encoding="utf-8")
+    second.write_text("beta", encoding="utf-8")
+
+    created_registries: list[object] = []
+    seen_registries: list[object] = []
+
+    class _Registry:
+        pass
+
+    def fake_make_registry(self):
+        registry = _Registry()
+        created_registries.append(registry)
+        return registry
+
+    def fake_resolve_document_extraction(
+        file_path: Path,
+        client,
+        *,
+        config,
+        enable_vlm_fallback=True,
+        allow_vlm_api=True,
+        cached_vlm_content=None,
+        primary_result=None,
+        registry=None,
+    ) -> ResolvedExtraction:
+        del (
+            client,
+            config,
+            enable_vlm_fallback,
+            allow_vlm_api,
+            cached_vlm_content,
+            primary_result,
+        )
+        seen_registries.append(registry)
+        return ResolvedExtraction(
+            primary_result=ExtractionResult(
+                content=file_path.name,
+                success=True,
+                extractor="text",
+            ),
+            primary_effective_length=len(file_path.name),
+            pdf_profile=None,
+            fallback_needed=False,
+            selected_source="primary",
+            final_content=file_path.name,
+            final_effective_length=len(file_path.name),
+            vlm_content=None,
+            vlm_source="none",
+            vlm_api_success=False,
+            vlm_api_page_calls=0,
+            sample_page_limit=None,
+        )
+
+    monkeypatch.setattr(
+        PipelineService,
+        "_make_extractor_registry",
+        fake_make_registry,
+    )
+    monkeypatch.setattr(
+        "dite.core.pipeline.resolve_document_extraction",
+        fake_resolve_document_extraction,
+    )
+
+    service = PipelineService(client=object(), config=Config(), cache=None)
+    options = PipelineOptions(use_cache=False, use_embedding_cache=False)
+
+    service.extract_files([first], options)
+    service.extract_files([second], options)
+
+    assert len(created_registries) == 2
+    assert created_registries[0] is not created_registries[1]
+    assert seen_registries == created_registries
+
+
 def test_pipeline_reuses_vlm_cache_by_hash_across_paths(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -255,7 +336,7 @@ def test_pipeline_reuses_vlm_cache_by_hash_across_paths(
         return file_path.suffix.lower() == ".pdf"
 
     def fake_get_embeddings(
-        client, texts, file_names, embedding_model=None
+        client, texts, *, config=None, file_names=None, embedding_model=None
     ) -> np.ndarray:
         call_count["emb"] += 1
         captured["texts"] = texts
@@ -265,6 +346,8 @@ def test_pipeline_reuses_vlm_cache_by_hash_across_paths(
     def fake_cluster_documents(
         embeddings: np.ndarray,
         repair_noise: bool,
+        *,
+        config=None,
         clustering=None,
         item_names=None,
     ):
@@ -359,7 +442,7 @@ def test_pipeline_prefers_vlm_when_docling_content_is_glyph_noise(
         )
 
     def fake_get_embeddings(
-        client, texts, file_names, embedding_model=None
+        client, texts, *, config=None, file_names=None, embedding_model=None
     ) -> np.ndarray:
         captured["texts"] = texts
         return np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
@@ -367,6 +450,8 @@ def test_pipeline_prefers_vlm_when_docling_content_is_glyph_noise(
     def fake_cluster_documents(
         embeddings: np.ndarray,
         repair_noise: bool,
+        *,
+        config=None,
         clustering=None,
         item_names=None,
     ):
@@ -424,13 +509,15 @@ def test_pipeline_real_scan_extract_and_cache_hits(tmp_path: Path, monkeypatch) 
     service = PipelineService(client=object(), config=config, cache=cache)
 
     def fake_get_embeddings(
-        client, texts, file_names, embedding_model=None
+        client, texts, *, config=None, file_names=None, embedding_model=None
     ) -> np.ndarray:
         return np.array([[0.1, 0.2], [0.1, 0.2]], dtype=np.float32)
 
     def fake_cluster_documents(
         embeddings: np.ndarray,
         repair_noise: bool,
+        *,
+        config=None,
         clustering=None,
         item_names=None,
     ):
@@ -483,7 +570,7 @@ def test_extract_files_locks_down_failure_corpus_classification_baseline(
     names = [*(f"failed-{index}.pdf" for index in range(1, 8)), "weak-1.pdf", "weak-2.pdf"]
     for name in names:
         path = tmp_path / name
-        path.write_bytes(f"%PDF-1.7 {name}".encode("utf-8"))
+        path.write_bytes(f"%PDF-1.7 {name}".encode())
         files.append(path)
 
     service = PipelineService(client=object(), config=Config(), cache=None)
@@ -677,7 +764,7 @@ def test_pipeline_recomputes_embedding_when_model_changes(
     call_count = {"emb": 0}
 
     def fake_get_embeddings(
-        client, texts, file_names, embedding_model=None
+        client, texts, *, config=None, file_names=None, embedding_model=None
     ) -> np.ndarray:
         call_count["emb"] += 1
         assert embedding_model == "embed-v2"
@@ -686,6 +773,8 @@ def test_pipeline_recomputes_embedding_when_model_changes(
     def fake_cluster_documents(
         embeddings: np.ndarray,
         repair_noise: bool,
+        *,
+        config=None,
         clustering=None,
         item_names=None,
     ):
@@ -748,7 +837,7 @@ def test_pipeline_recomputes_embedding_when_input_version_changes(
     captured: dict[str, object] = {}
 
     def fake_get_embeddings(
-        client, texts, file_names, embedding_model=None
+        client, texts, *, config=None, file_names=None, embedding_model=None
     ) -> np.ndarray:
         captured["texts"] = texts
         captured["file_names"] = file_names
@@ -758,6 +847,8 @@ def test_pipeline_recomputes_embedding_when_input_version_changes(
     def fake_cluster_documents(
         embeddings: np.ndarray,
         repair_noise: bool,
+        *,
+        config=None,
         clustering=None,
         item_names=None,
     ):
@@ -821,7 +912,7 @@ def test_pipeline_uses_smart_content_excerpt_for_embedding(
         return ExtractionResult(content=long_content, success=True, extractor="docling")
 
     def fake_get_embeddings(
-        client, texts, file_names, embedding_model=None
+        client, texts, *, config=None, file_names=None, embedding_model=None
     ) -> np.ndarray:
         captured["texts"] = texts
         captured["file_names"] = file_names
@@ -830,6 +921,8 @@ def test_pipeline_uses_smart_content_excerpt_for_embedding(
     def fake_cluster_documents(
         embeddings: np.ndarray,
         repair_noise: bool,
+        *,
+        config=None,
         clustering=None,
         item_names=None,
     ):
@@ -1011,7 +1104,12 @@ def test_scan_files_excludes_target_directory(tmp_path: Path) -> None:
     organized.mkdir()
     (organized / "b.txt").write_text("beta", encoding="utf-8")
 
-    files = scan_files(root, extensions={".txt"}, exclude_paths=[organized])
+    files = scan_files(
+        root,
+        config=Config(),
+        extensions={".txt"},
+        exclude_paths=[organized],
+    )
 
     assert [p.name for p in files] == ["a.txt"]
 
@@ -1021,7 +1119,7 @@ def test_scan_files_real_docs_fixture_uses_supported_extensions() -> None:
     assert fixture_dir.exists()
 
     extensions = Config().formats.all_extensions
-    files = scan_files(fixture_dir, extensions=extensions)
+    files = scan_files(fixture_dir, config=Config(), extensions=extensions)
 
     assert files
     assert all(path.suffix.lower() in extensions for path in files)
@@ -1039,7 +1137,7 @@ def test_scan_files_verbose_logs_follow_locale(
     setup_logging(verbose=True)
     set_locale("en")
 
-    files = scan_files(root, extensions={".txt"})
+    files = scan_files(root, config=Config(), extensions={".txt"})
 
     output = capsys.readouterr().out
     assert [path.name for path in files] == ["a.txt"]
@@ -1093,6 +1191,8 @@ def test_pipeline_verbose_logs_include_extraction_summary(
     def fake_cluster_documents(
         embeddings: np.ndarray,
         repair_noise: bool,
+        *,
+        config=None,
         clustering=None,
         item_names=None,
     ):
@@ -1178,6 +1278,7 @@ def test_generate_all_cluster_names_debug_uses_letter_labels(capsys) -> None:
         labels=labels,
         contents=["doc a", "doc b", "doc c"],
         files=[Path("a.txt"), Path("b.txt"), Path("c.txt")],
+        config=Config(),
         embeddings=None,
         merge_same_name=False,
         llm_model="dummy-model",
@@ -1243,6 +1344,7 @@ def test_generate_all_cluster_names_falls_back_to_unnamed_on_api_error() -> None
         labels=labels,
         contents=contents,
         files=files,
+        config=Config(),
         embeddings=embeddings,
         merge_same_name=False,
         llm_model="dummy-model",
@@ -1340,6 +1442,7 @@ def test_generate_cluster_name_uses_heuristic_when_response_is_empty() -> None:
         cluster_embeddings=None,
         sample_contents=["线性代数导论\n这是一本教材的内容摘要。"],
         sample_names=["linear-algebra.pdf"],
+        config=Config(),
         llm_model="dummy-model",
     )
 
@@ -1375,6 +1478,7 @@ def test_generate_cluster_name_skips_placeholder_and_author_lines() -> None:
             "<!-- image -->\nShuo Wang * Chunlong Xia\nDocument Intelligence\n摘要",
         ],
         sample_names=["document-intelligence.pdf"],
+        config=Config(),
         llm_model="dummy-model",
     )
 
@@ -1408,6 +1512,7 @@ def test_generate_cluster_name_uses_heuristic_for_invalid_model_output() -> None
         cluster_embeddings=None,
         sample_contents=["操作系统原理\n这是一本教材的内容摘要。"],
         sample_names=["os.pdf"],
+        config=Config(),
         llm_model="dummy-model",
     )
 
@@ -1464,6 +1569,7 @@ def test_generate_cluster_name_retries_provider_server_error_then_succeeds() -> 
         cluster_embeddings=None,
         sample_contents=["线性代数导论\n教材内容摘要"],
         sample_names=["linear-algebra.pdf"],
+        config=Config(),
         llm_model="dummy-model",
     )
 
@@ -1509,6 +1615,7 @@ def test_generate_cluster_name_formats_final_api_error_in_debug(capsys) -> None:
         cluster_embeddings=None,
         sample_contents=["操作系统原理\n这是一本教材的内容摘要。"],
         sample_names=["os.pdf"],
+        config=Config(),
         llm_model="dummy-model",
     )
 
@@ -1562,38 +1669,15 @@ def test_extract_with_vlm_fallback_uses_passed_config(
     assert captured["max_pages"] == PDF_VLM_SAMPLE_PAGE_LIMIT
 
 
-def test_extract_with_vlm_fallback_loads_config_when_missing(
-    tmp_path: Path, monkeypatch
-) -> None:
-    from dite.config import Config
+def test_extract_with_vlm_fallback_requires_explicit_config(tmp_path: Path) -> None:
     from dite.extractors import router
 
     pdf_path = tmp_path / "scan.pdf"
     pdf_path.write_text("fake", encoding="utf-8")
-    loaded_cfg = Config()
-    calls = {"load": 0}
 
-    def fake_load_config():
-        calls["load"] += 1
-        return loaded_cfg
-
-    def fake_extract(
-        file_path, client, config, max_pages=PDF_VLM_SAMPLE_PAGE_LIMIT
-    ) -> VLMSamplingResult:
-        return VLMSamplingResult(
-            result=ExtractionResult(
-                content="loaded" if config is loaded_cfg else "wrong",
-                success=True,
-                extractor="vlm_fallback",
-            ),
-            api_page_calls=1,
-            sample_page_limit=max_pages,
-        )
-
-    monkeypatch.setattr(router, "load_config", fake_load_config)
-    monkeypatch.setattr(router, "_extract_pdf_with_vlm_sampling", fake_extract)
-
-    result = router.extract_with_vlm_fallback(pdf_path, client=object(), config=None)
-
-    assert calls["load"] == 1
-    assert result.content == "loaded"
+    try:
+        router.extract_with_vlm_fallback(pdf_path, client=object())  # type: ignore[call-arg]
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("extract_with_vlm_fallback should require config")
