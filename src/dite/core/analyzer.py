@@ -188,10 +188,11 @@ Excerpt: {excerpt}
 def analyze_document(
     client: OpenAI,
     content: str,
+    *,
+    config: Config,
     max_content_length: int = 4000,
     max_retries: int = 3,
     llm_model: str | None = None,
-    config: Config | None = None,
 ) -> DocumentAnalysis:
     """
     使用 Single-Call 分析文档
@@ -207,8 +208,7 @@ def analyze_document(
     Returns:
         DocumentAnalysis 对象
     """
-    cfg = config or Config()
-    model = llm_model or cfg.models.llm
+    model = llm_model or config.models.llm
     logger = get_logger()
 
     # 截断内容
@@ -289,6 +289,8 @@ def build_weighted_payload(
 def analyze_and_build_payload(
     client: OpenAI,
     content: str,
+    *,
+    config: Config,
 ) -> tuple[DocumentAnalysis, str]:
     """
     分析文档并构建加权 payload
@@ -300,6 +302,6 @@ def analyze_and_build_payload(
     Returns:
         (DocumentAnalysis, weighted_payload)
     """
-    analysis = analyze_document(client, content)
+    analysis = analyze_document(client, content, config=config)
     payload = build_weighted_payload(analysis, content)
     return analysis, payload

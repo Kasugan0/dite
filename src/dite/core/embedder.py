@@ -24,6 +24,8 @@ def _get_file_name(file_names: list[str] | None, index: int) -> str | None:
 def get_embeddings(
     client: OpenAI,
     texts: list[str],
+    *,
+    config: Config,
     file_names: list[str] | None = None,
     embedding_model: str | None = None,
 ) -> np.ndarray:
@@ -39,7 +41,7 @@ def get_embeddings(
         Embedding 向量矩阵 (N, D)
     """
     logger = get_logger()
-    model = embedding_model or Config().models.embedding
+    model = embedding_model or config.models.embedding
 
     logger.debug(t("debug_vectorizing_documents", count=len(texts)))
     logger.debug(t("debug_vectorizing_model", model=model))

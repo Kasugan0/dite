@@ -9,6 +9,8 @@ from dite.utils.logging import get_logger
 
 def scan_files(
     folder: Path,
+    *,
+    config: Config,
     extensions: set[str] | None = None,
     recursive: bool = True,
     exclude_paths: list[Path] | None = None,
@@ -28,7 +30,7 @@ def scan_files(
     logger = get_logger()
 
     if extensions is None:
-        extensions = Config().formats.all_extensions
+        extensions = config.formats.all_extensions
 
     logger.debug(t("debug_scan_folder", folder=folder))
     logger.debug(t("debug_scan_recursive", recursive=recursive))

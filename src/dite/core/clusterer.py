@@ -357,6 +357,8 @@ def repair_noise_with_knn(
 
 def cluster_documents(
     embeddings: np.ndarray,
+    *,
+    config: Config,
     repair_noise: bool = True,
     knn_k: int | None = None,
     knn_distance_threshold: float | None = None,
@@ -376,7 +378,7 @@ def cluster_documents(
         聚类标签数组和修复的噪音点数量
     """
     logger = get_logger()
-    clustering_cfg = clustering or Config().clustering
+    clustering_cfg = clustering or config.clustering
     effective_knn_k = knn_k if knn_k is not None else clustering_cfg.knn_k
     effective_distance_threshold = (
         knn_distance_threshold
@@ -460,9 +462,10 @@ def generate_cluster_name(
     cluster_embeddings: np.ndarray | None,
     sample_contents: list[str],
     sample_names: list[str],
+    *,
+    config: Config,
     top_k: int = 5,
     llm_model: str | None = None,
-    config: Config | None = None,
 ) -> str:
     """
     使用 LLM 为簇生成名称（基于最具代表性的 Top-K 文件）
@@ -478,9 +481,8 @@ def generate_cluster_name(
         簇名称
     """
     logger = get_logger()
-    cfg = config or Config()
-    model = llm_model or cfg.models.llm
-    request_profile = cfg.request_profiles.cluster_naming
+    model = llm_model or config.models.llm
+    request_profile = config.request_profiles.cluster_naming
 
     # 如果有向量，选择最具代表性的文件
     if cluster_embeddings is not None and len(cluster_embeddings) > 0:
@@ -644,10 +646,11 @@ def generate_all_cluster_names(
     labels: np.ndarray,
     contents: list[str],
     files: list[Path],
+    *,
+    config: Config,
     embeddings: np.ndarray | None = None,
     merge_same_name: bool = True,
     llm_model: str | None = None,
-    config: Config | None = None,
 ) -> tuple[np.ndarray, dict[int, str], int]:
     """
     为所有簇生成名称，并可选合并同名簇
@@ -688,8 +691,8 @@ def generate_all_cluster_names(
             cluster_embeddings,
             cluster_contents,
             cluster_file_names,
-            llm_model=llm_model,
             config=config,
+            llm_model=llm_model,
         )
         cluster_names[label] = _display_cluster_name(label, name)
         logger = get_logger()
