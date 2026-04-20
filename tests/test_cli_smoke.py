@@ -282,6 +282,63 @@ def test_dite_scan_reports_brief_summary_by_default_and_details_in_verbose(
     assert "vlm_page_calls=6" in verbose_result.output
 
 
+def test_dite_scan_verbose_does_not_leak_internal_profile_codes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runner = CliRunner()
+    _write_test_config(tmp_path, monkeypatch)
+    setup_logging()
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    pdf = docs / "doc.pdf"
+    pdf.write_text("pdf", encoding="utf-8")
+
+    fake_result = PipelineResult(
+        files=[pdf],
+        contents=["usable PDF content" * 20],
+        embeddings=np.array([[0.1, 0.2, 0.3]]),
+        labels=np.array([0]),
+        cluster_names={0: "Topic"},
+        extraction=ExtractionSummary(
+            primary_failures=1,
+            source_fallback_needed=1,
+            selected_vlm_files=1,
+            vlm_api_page_calls=4,
+        ),
+        file_reports=[
+            ExtractionFileReport(
+                file=pdf,
+                primary_extractor="docling",
+                primary_success=False,
+                primary_error="broken",
+                source_profile="parser_timeout_or_broken",
+                source_effective_length=0,
+                selected_source="vlm_api",
+                final_effective_length=2500,
+                excerpt_was_truncated=False,
+                vlm_api_page_calls=4,
+                sample_page_limit=10,
+                file_hash="hash-1",
+            )
+        ],
+    )
+
+    def fake_run_pipeline_or_exit(pipeline, folder, options, cache):
+        del pipeline, folder, options, cache
+        return fake_result
+
+    monkeypatch.setattr("dite.cli._run_pipeline_or_exit", fake_run_pipeline_or_exit)
+
+    result = runner.invoke(app, ["scan", str(docs), "--verbose"])
+
+    assert result.exit_code == 0
+    assert "primary_failures=1" in result.output
+    assert "fallback_needed=1" in result.output
+    assert "vlm_page_calls=4" in result.output
+    assert "parser_timeout_or_broken" not in result.output
+    assert "vlm_api" not in result.output
+
+
 def test_dite_organize_help(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
     _write_test_config(tmp_path, monkeypatch)

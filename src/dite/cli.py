@@ -192,15 +192,37 @@ def _label_source_profile(profile: str | None) -> str:
     return labels.get(profile, profile)
 
 
+def _select_problem_file_reports(
+    file_reports: list[ExtractionFileReport],
+) -> list[ExtractionFileReport]:
+    problem_profiles = {
+        "weak_text",
+        "scanned_image",
+        "parser_timeout_or_broken",
+    }
+    return [
+        report
+        for report in file_reports
+        if (
+            not report.primary_success
+            or report.selected_source != "primary"
+            or report.source_profile in problem_profiles
+        )
+    ]
+
+
 def _print_extraction_detail_table(file_reports: list[ExtractionFileReport]) -> None:
     logger = get_logger()
+    problem_reports = _select_problem_file_reports(file_reports)
+    if not problem_reports:
+        return
     table = Table(title=t("pdf_check_verbose_table_title"))
     table.add_column(t("pdf_check_table_file"), style="path")
     table.add_column(t("pdf_check_table_primary_extractor"))
     table.add_column(t("pdf_check_table_source_profile"))
     table.add_column(t("pdf_check_table_selected_source"))
     table.add_column(t("pdf_check_table_effective_length"), justify="right")
-    for report in file_reports:
+    for report in problem_reports:
         table.add_row(
             str(report.file),
             report.primary_extractor,
@@ -587,7 +609,7 @@ def pdf_check(
     )
     logger.print(t("pdf_check_note"))
 
-    if logger.verbose and result.file_reports:
+    if logger.verbose and _select_problem_file_reports(result.file_reports):
         _print_extraction_detail_table(result.file_reports)
 
     if weak_files:
