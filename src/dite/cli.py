@@ -1,88 +1,168 @@
 """CLI 命令定义"""
 
+from __future__ import annotations
+
 import json
-import logging
 import warnings
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
-# 抑制第三方库的警告（如 Pillow 的 WMF 警告）
-warnings.filterwarnings("ignore", message=".*cannot be loaded by Pillow.*")
-warnings.filterwarnings("ignore", message=".*cannot find loader.*")
+import click
+import numpy as np
+import typer
+from openai import APIConnectionError, APIError, APITimeoutError, OpenAI
+from rich.table import Table
+from typer.core import TyperGroup
 
-# 在任何其他导入之前配置 logging
-# 这必须在导入 docling 等库之前完成，否则它们会调用 basicConfig
-# 先调用 basicConfig 占位，防止第三方库配置 root logger
-logging.basicConfig(level=logging.WARNING, handlers=[logging.NullHandler()])
+from dite import __version__
+from dite.cache import FileCache
+from dite.config import Config, load_config
+from dite.core.clusterer import _build_cluster_debug_labels
+from dite.core.embedder import get_embedding_cache_version
+from dite.i18n import set_locale, t
+from dite.utils.llm import format_api_error
+from dite.utils.logging import get_logger, setup_logging
 
-# 禁用 docling 的所有日志器（包括子模块）
-_docling_logger_names = [
-    "docling",
-    "docling_core",
-    "docling.pipeline",
-    "docling.pipeline.standard_pdf_pipeline",
-    "docling.backend",
-    "docling.backend.mspowerpoint_backend",
-    "docling.backend.msword_backend",
-    "docling.datamodel",
-    "docling.document_converter",
-]
-for _name in _docling_logger_names:
-    _lg = logging.getLogger(_name)
-    _lg.setLevel(logging.CRITICAL)
-    _lg.propagate = False
-    _lg.addHandler(logging.NullHandler())
-
-# 以下导入必须在 logging 配置之后，因为 docling 等库在导入时会尝试配置日志
-import numpy as np  # noqa: E402
-import typer  # noqa: E402
-from openai import APIConnectionError, APIError, APITimeoutError, OpenAI  # noqa: E402
-from rich.table import Table  # noqa: E402
-
-from dite import __version__  # noqa: E402
-from dite.cache import FileCache  # noqa: E402
-from dite.config import Config, load_config  # noqa: E402
-from dite.core.clusterer import _build_cluster_debug_labels  # noqa: E402
-from dite.core.embedder import get_embedding_cache_version  # noqa: E402
-from dite.core.organizer import OrganizePreview  # noqa: E402
-from dite.core.pipeline import (  # noqa: E402
-    ExtractionFileReport,
-    PipelineOptions,
-    PipelineResult,
-    PipelineService,
-)
-from dite.core.scanner import scan_files  # noqa: E402
-from dite.extractors.docling import (  # noqa: E402
-    download_docling_pdf_models,
-    get_docling_pdf_artifacts_path,
-    has_docling_pdf_artifacts,
-)
-from dite.i18n import set_locale, t  # noqa: E402
-from dite.utils.llm import format_api_error  # noqa: E402
-from dite.utils.logging import get_logger, setup_logging  # noqa: E402
+if TYPE_CHECKING:
+    from dite.core.organizer import OrganizePreview
+    from dite.core.pipeline import (
+        ExtractionFileReport,
+        PipelineOptions,
+        PipelineResult,
+        PipelineService,
+    )
 
 
-def _initialize_cli_locale() -> None:
-    """在 CLI 构建前按配置设置语言，确保 --help 也使用配置语言。"""
-    cfg = load_config()
-    set_locale(cfg.i18n.locale)
+_HELP_KEY_PREFIX = "__dite_help__:"
+PipelineOptions = None
+PipelineService = None
+OrganizePreview = None
+download_docling_pdf_models = None
+get_docling_pdf_artifacts_path = None
+has_docling_pdf_artifacts = None
 
 
-_initialize_cli_locale()
+def _help_key(key: str) -> str:
+    return f"{_HELP_KEY_PREFIX}{key}"
+
+
+def _translate_help_text(text: str | None) -> str | None:
+    if text is None or not text.startswith(_HELP_KEY_PREFIX):
+        return text
+    return t(text.removeprefix(_HELP_KEY_PREFIX))
+
+
+def _sync_command_help(command: click.Command) -> None:
+    command.help = _translate_help_text(command.help)
+    command.short_help = _translate_help_text(command.short_help)
+    command.epilog = _translate_help_text(command.epilog)
+
+    for param in command.params:
+        if hasattr(param, "help"):
+            param.help = _translate_help_text(param.help)
+
+    if isinstance(command, click.Group):
+        for subcommand in command.commands.values():
+            _sync_command_help(subcommand)
+
+
+class LocalizedTyperGroup(TyperGroup):
+    def make_context(
+        self,
+        info_name: str | None,
+        args: list[str],
+        parent: click.Context | None = None,
+        **extra: Any,
+    ) -> click.Context:
+        cfg = load_config()
+        set_locale(cfg.i18n.locale)
+        _sync_command_help(self)
+        return super().make_context(info_name, args, parent=parent, **extra)
+
+
+def _install_cli_warning_filters() -> None:
+    warnings.filterwarnings("ignore", message=".*cannot be loaded by Pillow.*")
+    warnings.filterwarnings("ignore", message=".*cannot find loader.*")
+
+
+def _get_pipeline_options_cls():
+    global PipelineOptions
+    if PipelineOptions is None:
+        from dite.core.pipeline import PipelineOptions as _PipelineOptions
+
+        PipelineOptions = _PipelineOptions
+    return PipelineOptions
+
+
+def _get_pipeline_service_cls():
+    global PipelineService
+    if PipelineService is None:
+        from dite.core.pipeline import PipelineService as _PipelineService
+
+        PipelineService = _PipelineService
+    return PipelineService
+
+
+def _get_organize_preview_cls():
+    global OrganizePreview
+    if OrganizePreview is None:
+        from dite.core.organizer import OrganizePreview as _OrganizePreview
+
+        OrganizePreview = _OrganizePreview
+    return OrganizePreview
+
+
+def _get_docling_helpers():
+    global download_docling_pdf_models
+    global get_docling_pdf_artifacts_path
+    global has_docling_pdf_artifacts
+    if (
+        download_docling_pdf_models is None
+        or get_docling_pdf_artifacts_path is None
+        or has_docling_pdf_artifacts is None
+    ):
+        from dite.extractors.docling import (
+            download_docling_pdf_models as _download_docling_pdf_models,
+        )
+        from dite.extractors.docling import (
+            get_docling_pdf_artifacts_path as _get_docling_pdf_artifacts_path,
+        )
+        from dite.extractors.docling import (
+            has_docling_pdf_artifacts as _has_docling_pdf_artifacts,
+        )
+
+        if download_docling_pdf_models is None:
+            download_docling_pdf_models = _download_docling_pdf_models
+        if get_docling_pdf_artifacts_path is None:
+            get_docling_pdf_artifacts_path = _get_docling_pdf_artifacts_path
+        if has_docling_pdf_artifacts is None:
+            has_docling_pdf_artifacts = _has_docling_pdf_artifacts
+    return (
+        download_docling_pdf_models,
+        get_docling_pdf_artifacts_path,
+        has_docling_pdf_artifacts,
+    )
 
 # 创建 CLI 应用
 app = typer.Typer(
     name="dite",
-    help=t("cli_description"),
+    cls=LocalizedTyperGroup,
+    help=_help_key("cli_description"),
     no_args_is_help=True,
 )
 
 # 缓存子命令
-cache_app = typer.Typer(help=t("cli_help_cache_group"))
+cache_app = typer.Typer(
+    cls=LocalizedTyperGroup,
+    help=_help_key("cli_help_cache_group"),
+)
 app.add_typer(cache_app, name="cache")
 
 # 环境准备子命令
-setup_app = typer.Typer(help=t("cli_help_setup_group"))
+setup_app = typer.Typer(
+    cls=LocalizedTyperGroup,
+    help=_help_key("cli_help_setup_group"),
+)
 app.add_typer(setup_app, name="setup")
 
 
@@ -99,17 +179,17 @@ def main(
     ctx: typer.Context,
     verbose: Annotated[
         bool,
-        typer.Option("--verbose", "-v", help=t("cli_help_verbose")),
+        typer.Option("--verbose", "-v", help=_help_key("cli_help_verbose")),
     ] = False,
     quiet: Annotated[
         bool,
-        typer.Option("--quiet", "-q", help=t("cli_help_quiet")),
+        typer.Option("--quiet", "-q", help=_help_key("cli_help_quiet")),
     ] = False,
     color: Annotated[
         bool,
         typer.Option(
             "--color",
-            help=t("cli_help_color"),
+            help=_help_key("cli_help_color"),
         ),
     ] = False,
     version: Annotated[
@@ -118,20 +198,16 @@ def main(
             "--version",
             callback=version_callback,
             is_eager=True,
-            help=t("cli_help_version"),
+            help=_help_key("cli_help_version"),
         ),
     ] = False,
 ):
     """DITE - Multimodal document intelligent clustering tool"""
-    # 设置日志
-    setup_logging(verbose=verbose, quiet=quiet, force_color=color)
-
-    # 加载配置
+    _install_cli_warning_filters()
     cfg = load_config()
-    ctx.obj = {"config": cfg}
-
-    # 设置语言环境
     set_locale(cfg.i18n.locale)
+    setup_logging(verbose=verbose, quiet=quiet, force_color=color)
+    ctx.obj = {"config": cfg}
 
 
 def _get_app_config(ctx: typer.Context | None) -> Config:
@@ -345,32 +421,35 @@ def _print_report(report: dict) -> None:
             logger.print(f"  - {f['name']}{marker}")
 
 
-@app.command(help=t("scan_description"))
+@app.command(help=_help_key("scan_description"))
 def scan(
     ctx: typer.Context,
     folder: Annotated[
         Path,
-        typer.Argument(help=t("cli_help_folder_scan")),
+        typer.Argument(help=_help_key("cli_help_folder_scan")),
     ],
     output: Annotated[
         Path | None,
-        typer.Option("--output", "-o", help=t("cli_help_output_report")),
+        typer.Option("--output", "-o", help=_help_key("cli_help_output_report")),
     ] = None,
     verbose: Annotated[
         bool,
-        typer.Option("--verbose", "-v", help=t("cli_help_verbose")),
+        typer.Option("--verbose", "-v", help=_help_key("cli_help_verbose")),
     ] = False,
     quiet: Annotated[
         bool,
-        typer.Option("--quiet", "-q", help=t("cli_help_quiet")),
+        typer.Option("--quiet", "-q", help=_help_key("cli_help_quiet")),
     ] = False,
     no_cache: Annotated[
         bool,
-        typer.Option("--no-cache", help=t("cli_help_disable_cache")),
+        typer.Option("--no-cache", help=_help_key("cli_help_disable_cache")),
     ] = False,
     no_knn_repair: Annotated[
         bool,
-        typer.Option("--no-knn-repair", help=t("cli_help_disable_knn_repair")),
+        typer.Option(
+            "--no-knn-repair",
+            help=_help_key("cli_help_disable_knn_repair"),
+        ),
     ] = False,
 ):
     """
@@ -392,6 +471,9 @@ def scan(
         logger.error(t("scan_folder_not_found", folder=folder))
         raise typer.Exit(1)
 
+    pipeline_options_cls = _get_pipeline_options_cls()
+    pipeline_service_cls = _get_pipeline_service_cls()
+
     # 初始化
     client = _get_client(config)
     cache = (
@@ -402,11 +484,11 @@ def scan(
         if not no_cache and config.cache.enabled
         else None
     )
-    pipeline = PipelineService(client=client, config=config, cache=cache)
+    pipeline = pipeline_service_cls(client=client, config=config, cache=cache)
     result = _run_pipeline_or_exit(
         pipeline,
         folder,
-        PipelineOptions(
+        pipeline_options_cls(
             use_cache=cache is not None,
             use_embedding_cache=True,
             repair_noise=not no_knn_repair,
@@ -499,28 +581,31 @@ def scan(
     _print_report(report)
 
 
-@app.command("pdf-check", help=t("pdf_check_description"))
+@app.command("pdf-check", help=_help_key("pdf_check_description"))
 def pdf_check(
     ctx: typer.Context,
     folder: Annotated[
         Path,
-        typer.Argument(help=t("cli_help_folder_pdf_check")),
+        typer.Argument(help=_help_key("cli_help_folder_pdf_check")),
     ],
     verbose: Annotated[
         bool,
-        typer.Option("--verbose", "-v", help=t("cli_help_verbose")),
+        typer.Option("--verbose", "-v", help=_help_key("cli_help_verbose")),
     ] = False,
     quiet: Annotated[
         bool,
-        typer.Option("--quiet", "-q", help=t("cli_help_quiet")),
+        typer.Option("--quiet", "-q", help=_help_key("cli_help_quiet")),
     ] = False,
     no_cache: Annotated[
         bool,
-        typer.Option("--no-cache", help=t("cli_help_disable_cache")),
+        typer.Option("--no-cache", help=_help_key("cli_help_disable_cache")),
     ] = False,
     cached_vlm_only: Annotated[
         bool,
-        typer.Option("--cached-vlm-only", help=t("cli_help_cached_vlm_only")),
+        typer.Option(
+            "--cached-vlm-only",
+            help=_help_key("cli_help_cached_vlm_only"),
+        ),
     ] = False,
 ):
     """Run PDF extraction checks without embedding, clustering, or naming."""
@@ -536,7 +621,11 @@ def pdf_check(
         logger.error(t("scan_folder_not_found", folder=folder))
         raise typer.Exit(1)
 
-    files = scan_files(folder, extensions={".pdf"})
+    from dite.core.scanner import scan_files
+    pipeline_options_cls = _get_pipeline_options_cls()
+    pipeline_service_cls = _get_pipeline_service_cls()
+
+    files = scan_files(folder, config=config, extensions={".pdf"})
     if not files:
         logger.error(t("pdf_check_no_pdfs"))
         raise typer.Exit(1)
@@ -550,12 +639,12 @@ def pdf_check(
         if not no_cache and config.cache.enabled
         else None
     )
-    pipeline = PipelineService(client=client, config=config, cache=cache)
+    pipeline = pipeline_service_cls(client=client, config=config, cache=cache)
 
     try:
         result = pipeline.extract_files(
             files,
-            PipelineOptions(
+            pipeline_options_cls(
                 use_cache=cache is not None,
                 use_embedding_cache=False,
                 repair_noise=False,
@@ -625,44 +714,47 @@ def pdf_check(
     logger.success(t("pdf_check_passed", count=len(result.files)))
 
 
-@app.command(help=t("organize_description"))
+@app.command(help=_help_key("organize_description"))
 def organize(
     ctx: typer.Context,
     folder: Annotated[
         Path,
-        typer.Argument(help=t("cli_help_folder_organize")),
+        typer.Argument(help=_help_key("cli_help_folder_organize")),
     ],
     target: Annotated[
         Path | None,
-        typer.Option("--target", "-t", help=t("cli_help_target_folder")),
+        typer.Option("--target", "-t", help=_help_key("cli_help_target_folder")),
     ] = None,
     verbose: Annotated[
         bool,
-        typer.Option("--verbose", "-v", help=t("cli_help_verbose")),
+        typer.Option("--verbose", "-v", help=_help_key("cli_help_verbose")),
     ] = False,
     quiet: Annotated[
         bool,
-        typer.Option("--quiet", "-q", help=t("cli_help_quiet")),
+        typer.Option("--quiet", "-q", help=_help_key("cli_help_quiet")),
     ] = False,
     dry_run: Annotated[
         bool,
-        typer.Option("--dry-run", help=t("cli_help_preview_mode")),
+        typer.Option("--dry-run", help=_help_key("cli_help_preview_mode")),
     ] = False,
     execute: Annotated[
         bool,
-        typer.Option("--execute", help=t("cli_help_execute_move")),
+        typer.Option("--execute", help=_help_key("cli_help_execute_move")),
     ] = False,
     output_script: Annotated[
         Path | None,
-        typer.Option("--output-script", help=t("cli_help_output_script")),
+        typer.Option("--output-script", help=_help_key("cli_help_output_script")),
     ] = None,
     no_cache: Annotated[
         bool,
-        typer.Option("--no-cache", help=t("cli_help_disable_cache")),
+        typer.Option("--no-cache", help=_help_key("cli_help_disable_cache")),
     ] = False,
     no_knn_repair: Annotated[
         bool,
-        typer.Option("--no-knn-repair", help=t("cli_help_disable_knn_repair")),
+        typer.Option(
+            "--no-knn-repair",
+            help=_help_key("cli_help_disable_knn_repair"),
+        ),
     ] = False,
 ):
     """
@@ -693,6 +785,10 @@ def organize(
 
     logger.print(f"[bold blue]{t('cli_title')}[/bold blue]\n")
 
+    organize_preview_cls = _get_organize_preview_cls()
+    pipeline_options_cls = _get_pipeline_options_cls()
+    pipeline_service_cls = _get_pipeline_service_cls()
+
     # 初始化
     client = _get_client(config)
     cache = (
@@ -703,11 +799,11 @@ def organize(
         if not no_cache and config.cache.enabled
         else None
     )
-    pipeline = PipelineService(client=client, config=config, cache=cache)
+    pipeline = pipeline_service_cls(client=client, config=config, cache=cache)
     result = _run_pipeline_or_exit(
         pipeline,
         folder,
-        PipelineOptions(
+        pipeline_options_cls(
             use_cache=cache is not None,
             use_embedding_cache=True,
             repair_noise=not no_knn_repair,
@@ -733,7 +829,7 @@ def organize(
         cache.close()
 
     # 构建预览
-    preview = OrganizePreview(
+    preview = organize_preview_cls(
         source_folder=folder,
         target_folder=target,
     )
@@ -778,7 +874,7 @@ def organize(
         logger.print(f"\n[dim]{t('organize_dry_run_hint')}[/dim]")
 
 
-@cache_app.command("clear", help=t("cli_help_cache_clear"))
+@cache_app.command("clear", help=_help_key("cli_help_cache_clear"))
 def cache_clear(ctx: typer.Context):
     """Clear all cache."""
     logger = get_logger()
@@ -794,7 +890,7 @@ def cache_clear(ctx: typer.Context):
     logger.success(t("cache_cleared", count=count))
 
 
-@cache_app.command("clear-vlm", help=t("cli_help_cache_clear_vlm"))
+@cache_app.command("clear-vlm", help=_help_key("cli_help_cache_clear_vlm"))
 def cache_clear_vlm(ctx: typer.Context):
     """Clear VLM cache only."""
     logger = get_logger()
@@ -810,7 +906,7 @@ def cache_clear_vlm(ctx: typer.Context):
     logger.success(t("cache_vlm_cleared", count=count))
 
 
-@cache_app.command("status", help=t("cli_help_cache_status"))
+@cache_app.command("status", help=_help_key("cli_help_cache_status"))
 def cache_status(ctx: typer.Context):
     """View cache status."""
     logger = get_logger()
@@ -844,24 +940,35 @@ def cache_status(ctx: typer.Context):
     logger.print(f"[bold]{t('cache_db_size')}[/bold] {stats['db_size_mb']:.2f} MB")
 
 
-@setup_app.command("docling-pdf", help=t("cli_help_setup_docling_pdf"))
+@setup_app.command("docling-pdf", help=_help_key("cli_help_setup_docling_pdf"))
 def setup_docling_pdf(
     force: Annotated[
         bool,
-        typer.Option("--force", help=t("cli_help_setup_docling_pdf_force")),
+        typer.Option(
+            "--force",
+            help=_help_key("cli_help_setup_docling_pdf_force"),
+        ),
     ] = False,
     progress: Annotated[
         bool,
-        typer.Option("--progress", help=t("cli_help_setup_docling_pdf_progress")),
+        typer.Option(
+            "--progress",
+            help=_help_key("cli_help_setup_docling_pdf_progress"),
+        ),
     ] = False,
 ):
     """Install local Docling PDF models required by DITE."""
     logger = get_logger()
-    target_dir = get_docling_pdf_artifacts_path()
+    (
+        download_docling_pdf_models_fn,
+        get_docling_pdf_artifacts_path_fn,
+        has_docling_pdf_artifacts_fn,
+    ) = _get_docling_helpers()
+    target_dir = get_docling_pdf_artifacts_path_fn()
     logger.print(t("setup_docling_pdf_start", path=target_dir))
 
     try:
-        download_docling_pdf_models(
+        download_docling_pdf_models_fn(
             output_dir=target_dir,
             force=force,
             progress=progress,
@@ -870,7 +977,7 @@ def setup_docling_pdf(
         logger.error(t("setup_docling_pdf_failed", error=exc))
         raise typer.Exit(1) from exc
 
-    if not has_docling_pdf_artifacts(target_dir):
+    if not has_docling_pdf_artifacts_fn(target_dir):
         logger.error(t("setup_docling_pdf_incomplete", path=target_dir))
         raise typer.Exit(1)
 
