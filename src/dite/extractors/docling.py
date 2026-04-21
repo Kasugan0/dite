@@ -1,13 +1,15 @@
 """Docling 提取器 - 用于现代文档格式"""
 
 import logging
+import multiprocessing
 import signal
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from multiprocessing.connection import Connection
 from pathlib import Path
 
-from dite.i18n import t
+from dite.i18n import set_locale, t
 
 from .base import BaseExtractor, ExtractionResult
 
@@ -115,6 +117,79 @@ def _suppress_docling_warnings() -> None:
         logger = logging.getLogger(name)
         logger.setLevel(logging.ERROR)  # 只显示 ERROR 及以上
         logger.propagate = False
+
+
+def _docling_pdf_extract_child(
+    file_path: str,
+    enable_ocr: bool,
+    artifacts_path: str | None,
+    locale: str,
+    conn: Connection,
+) -> None:
+    try:
+        set_locale(locale)
+        extractor = DoclingExtractor(
+            enable_ocr=enable_ocr,
+            artifacts_path=Path(artifacts_path) if artifacts_path is not None else None,
+            pdf_timeout_sec=None,
+        )
+        conn.send(extractor.extract(Path(file_path)))
+    finally:
+        conn.close()
+
+
+def extract_docling_pdf_in_subprocess(
+    file_path: Path,
+    *,
+    enable_ocr: bool = False,
+    artifacts_path: Path | None = None,
+    timeout_sec: float | None = 60.0,
+    locale: str,
+) -> ExtractionResult:
+    ctx = multiprocessing.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe(duplex=False)
+    process = ctx.Process(
+        target=_docling_pdf_extract_child,
+        args=(
+            str(file_path),
+            enable_ocr,
+            str(artifacts_path) if artifacts_path is not None else None,
+            locale,
+            child_conn,
+        ),
+    )
+
+    try:
+        process.start()
+        child_conn.close()
+        process.join(timeout_sec)
+        if process.is_alive():
+            process.terminate()
+            process.join(1)
+            if process.is_alive():
+                process.kill()
+                process.join()
+            return ExtractionResult(
+                content="",
+                success=False,
+                extractor=DoclingExtractor.name,
+                error=t(
+                    "error_docling_pdf_timeout",
+                    seconds=timeout_sec or 0,
+                ),
+            )
+
+        if parent_conn.poll():
+            return parent_conn.recv()
+
+        return ExtractionResult(
+            content="",
+            success=False,
+            extractor=DoclingExtractor.name,
+            error=f"Docling subprocess failed with exit code {process.exitcode}",
+        )
+    finally:
+        parent_conn.close()
 
 
 class DoclingExtractor(BaseExtractor):
