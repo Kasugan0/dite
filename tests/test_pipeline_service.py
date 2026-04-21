@@ -1,4 +1,7 @@
+import concurrent.futures
 import shutil
+import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -13,9 +16,16 @@ from dite.config import (
 )
 from dite.core.clusterer import repair_noise_with_knn
 from dite.core.embedder import get_embedding_cache_version
-from dite.core.pipeline import PipelineOptions, PipelineService
+from dite.core.pipeline import (
+    ExtractionFileReport,
+    ExtractionSummaryDelta,
+    ExtractionWorkResult,
+    PipelineOptions,
+    PipelineService,
+)
 from dite.core.scanner import scan_files
 from dite.extractors.base import ExtractionResult
+from dite.extractors.docling import DoclingExtractor
 from dite.extractors.router import (
     PDF_VLM_SAMPLE_PAGE_LIMIT,
     PDFProfile,
@@ -37,9 +47,10 @@ def test_pipeline_reuses_vlm_cache_across_runs(tmp_path: Path, monkeypatch) -> N
 
     call_count = {"doc": 0, "vlm": 0, "emb": 0}
 
-    def fake_extract_document(
-        file_path: Path, client, registry=None, config=None
+    def fake_extract_docling_pdf_primary_result(
+        self, file_path: Path, extractor, semaphore
     ) -> ExtractionResult:
+        del self, extractor, semaphore
         call_count["doc"] += 1
         return ExtractionResult(content="", success=False, extractor="docling")
 
@@ -93,7 +104,11 @@ def test_pipeline_reuses_vlm_cache_across_runs(tmp_path: Path, monkeypatch) -> N
     ):
         return labels, {0: "Cluster_A"}, 0
 
-    monkeypatch.setattr("dite.extractors.router.extract_document", fake_extract_document)
+    monkeypatch.setattr(
+        PipelineService,
+        "_extract_docling_pdf_primary_result",
+        fake_extract_docling_pdf_primary_result,
+    )
     monkeypatch.setattr(
         "dite.extractors.router.needs_vlm_fallback", fake_needs_vlm_fallback
     )
@@ -135,9 +150,10 @@ def test_extract_files_stops_before_embedding_and_clustering(
 
     service = PipelineService(client=object(), config=Config(), cache=None)
 
-    def fake_extract_document(
-        file_path: Path, client, registry=None, config=None
+    def fake_extract_docling_pdf_primary_result(
+        self, file_path: Path, extractor, semaphore
     ) -> ExtractionResult:
+        del self, file_path, extractor, semaphore
         return ExtractionResult(
             content="usable extracted content" * 20,
             success=True,
@@ -153,7 +169,11 @@ def test_extract_files_stops_before_embedding_and_clustering(
     def fail_generate_all_cluster_names(*args, **kwargs):
         raise AssertionError("naming should not run in PDF extraction check")
 
-    monkeypatch.setattr("dite.extractors.router.extract_document", fake_extract_document)
+    monkeypatch.setattr(
+        PipelineService,
+        "_extract_docling_pdf_primary_result",
+        fake_extract_docling_pdf_primary_result,
+    )
     monkeypatch.setattr("dite.core.pipeline.get_embeddings", fail_get_embeddings)
     monkeypatch.setattr("dite.core.pipeline.cluster_documents", fail_cluster_documents)
     monkeypatch.setattr(
@@ -179,9 +199,10 @@ def test_extract_files_can_disable_vlm_api(tmp_path: Path, monkeypatch) -> None:
 
     service = PipelineService(client=object(), config=Config(), cache=None)
 
-    def fake_extract_document(
-        file_path: Path, client, registry=None, config=None
+    def fake_extract_docling_pdf_primary_result(
+        self, file_path: Path, extractor, semaphore
     ) -> ExtractionResult:
+        del self, file_path, extractor, semaphore
         return ExtractionResult(content="", success=False, extractor="docling")
 
     def fake_extract_with_vlm_sampling(
@@ -189,7 +210,11 @@ def test_extract_files_can_disable_vlm_api(tmp_path: Path, monkeypatch) -> None:
     ) -> VLMSamplingResult:
         raise AssertionError("VLM API should not run when disabled")
 
-    monkeypatch.setattr("dite.extractors.router.extract_document", fake_extract_document)
+    monkeypatch.setattr(
+        PipelineService,
+        "_extract_docling_pdf_primary_result",
+        fake_extract_docling_pdf_primary_result,
+    )
     monkeypatch.setattr(
         "dite.extractors.router.needs_vlm_fallback",
         lambda *args, **kwargs: True,
@@ -230,6 +255,12 @@ def test_pipeline_service_creates_fresh_registry_per_extraction_batch(
         registry = _Registry()
         created_registries.append(registry)
         return registry
+
+    def fake_extract_primary_result(
+        self, file_path: Path, registry, docling_pdf_semaphore
+    ) -> ExtractionResult:
+        del self, file_path, registry, docling_pdf_semaphore
+        return ExtractionResult(content="prefetched", success=True, extractor="text")
 
     def fake_resolve_document_extraction(
         file_path: Path,
@@ -276,6 +307,11 @@ def test_pipeline_service_creates_fresh_registry_per_extraction_batch(
         fake_make_registry,
     )
     monkeypatch.setattr(
+        PipelineService,
+        "_extract_primary_result",
+        fake_extract_primary_result,
+    )
+    monkeypatch.setattr(
         "dite.core.pipeline.resolve_document_extraction",
         fake_resolve_document_extraction,
     )
@@ -289,6 +325,276 @@ def test_pipeline_service_creates_fresh_registry_per_extraction_batch(
     assert len(created_registries) == 2
     assert created_registries[0] is not created_registries[1]
     assert seen_registries == created_registries
+
+
+def test_extract_files_defers_cache_size_enforcement_until_batch_end(
+    tmp_path: Path, monkeypatch
+) -> None:
+    first = tmp_path / "a.txt"
+    second = tmp_path / "b.txt"
+    first.write_text("alpha", encoding="utf-8")
+    second.write_text("beta", encoding="utf-8")
+
+    cache = FileCache(db_path=tmp_path / "cache.db")
+    service = PipelineService(client=object(), config=Config(), cache=cache)
+    save_flags: list[bool] = []
+    enforce_calls = {"count": 0}
+
+    def fake_extract_document(
+        file_path: Path, client, registry=None, config=None
+    ) -> ExtractionResult:
+        del client, registry, config
+        return ExtractionResult(
+            content=f"{file_path.stem} content long enough",
+            success=True,
+            extractor="text",
+        )
+
+    def fake_save(
+        self,
+        file_path,
+        file_hash,
+        file_mtime,
+        content_md,
+        vlm_content=None,
+        vlm_version=None,
+        embedding=None,
+        model_version="",
+        enforce_size_limit=True,
+    ) -> None:
+        del (
+            self,
+            file_path,
+            file_hash,
+            file_mtime,
+            content_md,
+            vlm_content,
+            vlm_version,
+            embedding,
+            model_version,
+        )
+        save_flags.append(enforce_size_limit)
+
+    def fake_enforce(self) -> int:
+        del self
+        enforce_calls["count"] += 1
+        return 0
+
+    monkeypatch.setattr("dite.extractors.router.extract_document", fake_extract_document)
+    monkeypatch.setattr(FileCache, "save", fake_save)
+    monkeypatch.setattr(FileCache, "enforce_size_limit", fake_enforce)
+
+    result = service.extract_files(
+        [first, second],
+        PipelineOptions(use_cache=True, use_embedding_cache=False),
+    )
+
+    assert len(result.contents) == 2
+    assert save_flags == [False, False]
+    assert enforce_calls["count"] == 1
+
+
+def test_extract_contents_preserves_input_order_when_workers_finish_out_of_order(
+    tmp_path: Path, monkeypatch
+) -> None:
+    files = [tmp_path / "first.txt", tmp_path / "second.txt", tmp_path / "third.txt"]
+    for file in files:
+        file.write_text(file.stem, encoding="utf-8")
+
+    service = PipelineService(client=object(), config=Config(), cache=None)
+    delays = {"first.txt": 0.20, "second.txt": 0.05, "third.txt": 0.10}
+
+    def fake_work_item(
+        self,
+        item,
+        options,
+        truncate_limit,
+        docling_pdf_semaphore,
+    ) -> object:
+        del self, options, truncate_limit, docling_pdf_semaphore
+        time.sleep(delays[item.file.name])
+        return ExtractionWorkResult(
+            index=item.index,
+            content=f"content::{item.file.name}",
+            file_hash=f"hash::{item.file.name}",
+            report=ExtractionFileReport(
+                file=item.file,
+                primary_extractor="text",
+                primary_success=True,
+                primary_error=None,
+                source_profile=None,
+                source_effective_length=len(item.file.name),
+                selected_source="primary",
+                final_effective_length=len(item.file.name),
+                excerpt_was_truncated=False,
+                vlm_api_page_calls=0,
+                sample_page_limit=None,
+                file_hash=f"hash::{item.file.name}",
+            ),
+            summary_delta=ExtractionSummaryDelta(
+                primary_failures=0,
+                source_fallback_needed=0,
+                selected_vlm_files=0,
+                vlm_api_page_calls=0,
+            ),
+        )
+
+    monkeypatch.setattr(
+        PipelineService,
+        "_extract_content_work_item",
+        fake_work_item,
+    )
+
+    contents, file_hashes, summary, reports = service._extract_contents(
+        files,
+        PipelineOptions(use_cache=False, use_embedding_cache=False),
+    )
+
+    assert contents == [
+        "content::first.txt",
+        "content::second.txt",
+        "content::third.txt",
+    ]
+    assert file_hashes == [
+        "hash::first.txt",
+        "hash::second.txt",
+        "hash::third.txt",
+    ]
+    assert [report.file.name for report in reports] == [
+        "first.txt",
+        "second.txt",
+        "third.txt",
+    ]
+    assert summary.duplicate_count == 0
+
+
+def test_docling_pdf_workers_limit_concurrent_docling_subprocesses(monkeypatch) -> None:
+    service = PipelineService(client=object(), config=Config(), cache=None)
+    service.config.processing.docling_pdf_workers = 1
+    semaphore = threading.BoundedSemaphore(service.config.processing.docling_pdf_workers)
+    active = {"count": 0, "max": 0}
+    lock = threading.Lock()
+
+    class _Extractor:
+        _enable_ocr = False
+        _artifacts_path = None
+        _pdf_timeout_sec = 0.5
+
+    def fake_subprocess(
+        file_path,
+        *,
+        enable_ocr,
+        artifacts_path,
+        timeout_sec,
+        locale,
+    ) -> ExtractionResult:
+        del file_path, enable_ocr, artifacts_path, timeout_sec, locale
+        with lock:
+            active["count"] += 1
+            active["max"] = max(active["max"], active["count"])
+        time.sleep(0.05)
+        with lock:
+            active["count"] -= 1
+        return ExtractionResult(content="ok", success=True, extractor="docling")
+
+    monkeypatch.setattr(
+        "dite.core.pipeline.extract_docling_pdf_in_subprocess",
+        fake_subprocess,
+    )
+
+    files = [Path("one.pdf"), Path("two.pdf"), Path("three.pdf")]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [
+            executor.submit(
+                service._extract_docling_pdf_primary_result,
+                file_path,
+                _Extractor(),
+                semaphore,
+            )
+            for file_path in files
+        ]
+        results = [future.result() for future in futures]
+
+    assert all(result.success for result in results)
+    assert active["max"] == 1
+
+
+def test_extract_primary_result_routes_pdf_docling_to_subprocess(
+    tmp_path: Path, monkeypatch
+) -> None:
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7")
+    service = PipelineService(client=object(), config=Config(), cache=None)
+    calls: dict[str, object] = {}
+
+    extractor = DoclingExtractor(pdf_timeout_sec=1.0)
+
+    monkeypatch.setattr(
+        "dite.core.pipeline.get_extractor",
+        lambda *args, **kwargs: extractor,
+    )
+
+    def fake_subprocess(self, file_path: Path, extractor, semaphore) -> ExtractionResult:
+        calls["file_path"] = file_path
+        calls["extractor"] = extractor
+        calls["semaphore"] = semaphore
+        return ExtractionResult(content="pdf-result", success=True, extractor="docling")
+
+    monkeypatch.setattr(
+        PipelineService,
+        "_extract_docling_pdf_primary_result",
+        fake_subprocess,
+    )
+
+    result = service._extract_primary_result(
+        pdf_path,
+        registry=object(),
+        docling_pdf_semaphore=threading.BoundedSemaphore(1),
+    )
+
+    assert result.content == "pdf-result"
+    assert calls["file_path"] == pdf_path
+    assert calls["extractor"] is extractor
+
+
+def test_extract_primary_result_routes_non_pdf_through_router(
+    tmp_path: Path, monkeypatch
+) -> None:
+    txt_path = tmp_path / "sample.txt"
+    txt_path.write_text("payload", encoding="utf-8")
+    service = PipelineService(client=object(), config=Config(), cache=None)
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "dite.core.pipeline.get_extractor",
+        lambda *args, **kwargs: object(),
+    )
+
+    def fake_extract_document(file_path: Path, client, *, config, registry=None):
+        calls["file_path"] = file_path
+        calls["client"] = client
+        calls["config"] = config
+        calls["registry"] = registry
+        return ExtractionResult(content="text-result", success=True, extractor="text")
+
+    monkeypatch.setattr(
+        "dite.extractors.router.extract_document",
+        fake_extract_document,
+    )
+
+    result = service._extract_primary_result(
+        txt_path,
+        registry="worker-registry",
+        docling_pdf_semaphore=threading.BoundedSemaphore(1),
+    )
+
+    assert result.content == "text-result"
+    assert calls == {
+        "file_path": txt_path,
+        "client": service.client,
+        "config": service.config,
+        "registry": "worker-registry",
+    }
 
 
 def test_pipeline_reuses_vlm_cache_by_hash_across_paths(
@@ -315,9 +621,10 @@ def test_pipeline_reuses_vlm_cache_by_hash_across_paths(
     call_count = {"doc": 0, "vlm": 0, "emb": 0}
     captured: dict[str, list[str]] = {}
 
-    def fake_extract_document(
-        file_path: Path, client, registry=None, config=None
+    def fake_extract_docling_pdf_primary_result(
+        self, file_path: Path, extractor, semaphore
     ) -> ExtractionResult:
+        del self, extractor, semaphore
         call_count["doc"] += 1
         return ExtractionResult(content="", success=False, extractor="docling")
 
@@ -365,7 +672,11 @@ def test_pipeline_reuses_vlm_cache_by_hash_across_paths(
     ):
         return labels, {0: "Cluster_A"}, 0
 
-    monkeypatch.setattr("dite.extractors.router.extract_document", fake_extract_document)
+    monkeypatch.setattr(
+        PipelineService,
+        "_extract_docling_pdf_primary_result",
+        fake_extract_docling_pdf_primary_result,
+    )
     monkeypatch.setattr(
         "dite.extractors.router._extract_pdf_with_vlm_sampling",
         fake_extract_with_vlm_sampling,
@@ -411,9 +722,10 @@ def test_pipeline_prefers_vlm_when_docling_content_is_glyph_noise(
 
     captured: dict[str, list[str]] = {}
 
-    def fake_extract_document(
-        file_path: Path, client, registry=None, config=None
+    def fake_extract_docling_pdf_primary_result(
+        self, file_path: Path, extractor, semaphore
     ) -> ExtractionResult:
+        del self, file_path, extractor, semaphore
         return ExtractionResult(
             content=("/G25/G26/G27/G28 " * 40) + ("A" * 147),
             success=True,
@@ -469,7 +781,11 @@ def test_pipeline_prefers_vlm_when_docling_content_is_glyph_noise(
     ):
         return labels, {0: "Cluster_A"}, 0
 
-    monkeypatch.setattr("dite.extractors.router.extract_document", fake_extract_document)
+    monkeypatch.setattr(
+        PipelineService,
+        "_extract_docling_pdf_primary_result",
+        fake_extract_docling_pdf_primary_result,
+    )
     monkeypatch.setattr(
         "dite.extractors.router.needs_vlm_fallback", fake_needs_vlm_fallback
     )
@@ -632,6 +948,17 @@ def test_extract_files_locks_down_failure_corpus_classification_baseline(
             sample_page_limit=PDF_VLM_SAMPLE_PAGE_LIMIT,
         )
 
+    def fake_extract_primary_result(
+        self, file_path: Path, registry, docling_pdf_semaphore
+    ) -> ExtractionResult:
+        del self, file_path, registry, docling_pdf_semaphore
+        return ExtractionResult(content="", success=True, extractor="docling")
+
+    monkeypatch.setattr(
+        PipelineService,
+        "_extract_primary_result",
+        fake_extract_primary_result,
+    )
     monkeypatch.setattr(
         "dite.core.pipeline.resolve_document_extraction",
         fake_resolve_document_extraction,
@@ -725,6 +1052,17 @@ def test_extract_files_detects_real_duplicate_group_without_cache(
             sample_page_limit=None,
         )
 
+    def fake_extract_primary_result(
+        self, file_path: Path, registry, docling_pdf_semaphore
+    ) -> ExtractionResult:
+        del self, file_path, registry, docling_pdf_semaphore
+        return ExtractionResult(content="", success=True, extractor="docling")
+
+    monkeypatch.setattr(
+        PipelineService,
+        "_extract_primary_result",
+        fake_extract_primary_result,
+    )
     monkeypatch.setattr(
         "dite.core.pipeline.resolve_document_extraction",
         fake_resolve_document_extraction,
@@ -906,9 +1244,10 @@ def test_pipeline_uses_smart_content_excerpt_for_embedding(
     long_content = ("COVER " * 80) + ("RUST OWNERSHIP " * 20) + ("INDEX " * 80)
     captured: dict[str, object] = {}
 
-    def fake_extract_document(
-        file_path: Path, client, registry=None, config=None
+    def fake_extract_docling_pdf_primary_result(
+        self, file_path: Path, extractor, semaphore
     ) -> ExtractionResult:
+        del self, file_path, extractor, semaphore
         return ExtractionResult(content=long_content, success=True, extractor="docling")
 
     def fake_get_embeddings(
@@ -940,7 +1279,11 @@ def test_pipeline_uses_smart_content_excerpt_for_embedding(
     ):
         return labels, {0: "Cluster_A"}, 0
 
-    monkeypatch.setattr("dite.extractors.router.extract_document", fake_extract_document)
+    monkeypatch.setattr(
+        PipelineService,
+        "_extract_docling_pdf_primary_result",
+        fake_extract_docling_pdf_primary_result,
+    )
     monkeypatch.setattr(
         "dite.extractors.router.needs_vlm_fallback", lambda *args, **kwargs: False
     )
@@ -1029,6 +1372,17 @@ def test_extract_files_preserves_final_length_separately_from_truncated_contents
             sample_page_limit=None,
         )
 
+    def fake_extract_primary_result(
+        self, file_path: Path, registry, docling_pdf_semaphore
+    ) -> ExtractionResult:
+        del self, file_path, registry, docling_pdf_semaphore
+        return ExtractionResult(content="", success=True, extractor="docling")
+
+    monkeypatch.setattr(
+        PipelineService,
+        "_extract_primary_result",
+        fake_extract_primary_result,
+    )
     monkeypatch.setattr(
         "dite.core.pipeline.resolve_document_extraction",
         fake_resolve_document_extraction,
