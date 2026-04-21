@@ -1,10 +1,12 @@
 import time
 from pathlib import Path
 
+from dite.extractors.base import ExtractionResult
 from dite.extractors.docling import (
     DoclingExtractor,
     _get_required_pdf_artifact_dirs,
     download_docling_pdf_models,
+    extract_docling_pdf_in_subprocess,
     get_docling_pdf_artifacts_path,
     has_docling_pdf_artifacts,
 )
@@ -113,3 +115,144 @@ def test_docling_pdf_times_out(tmp_path: Path, monkeypatch) -> None:
     assert result.success is False
     assert result.extractor == "docling"
     assert result.error == "Docling PDF extraction timed out after 0.01s"
+
+
+def test_extract_docling_pdf_in_subprocess_returns_child_result(
+    tmp_path: Path, monkeypatch
+) -> None:
+    set_locale("en")
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7")
+    expected = ExtractionResult(
+        content="docling child result",
+        success=True,
+        extractor="docling",
+    )
+    captured: dict[str, object] = {}
+
+    class _Conn:
+        def __init__(self, result: ExtractionResult | None) -> None:
+            self._result = result
+            self.closed = False
+
+        def poll(self) -> bool:
+            return self._result is not None
+
+        def recv(self) -> ExtractionResult:
+            assert self._result is not None
+            return self._result
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _Process:
+        exitcode = 0
+
+        def __init__(self, target, args) -> None:
+            captured["target"] = target
+            captured["args"] = args
+            self._alive = False
+
+        def start(self) -> None:
+            captured["started"] = True
+
+        def join(self, timeout=None) -> None:
+            captured.setdefault("join_calls", []).append(timeout)
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+        def terminate(self) -> None:
+            raise AssertionError("terminate should not run in success path")
+
+        def kill(self) -> None:
+            raise AssertionError("kill should not run in success path")
+
+    class _Context:
+        def Pipe(self, duplex=False):
+            assert duplex is False
+            return _Conn(expected), _Conn(None)
+
+        def Process(self, target, args):
+            return _Process(target, args)
+
+    monkeypatch.setattr(
+        "dite.extractors.docling.multiprocessing.get_context",
+        lambda method: _Context(),
+    )
+
+    result = extract_docling_pdf_in_subprocess(
+        pdf_path,
+        timeout_sec=0.5,
+        locale="en",
+    )
+
+    assert result == expected
+    assert captured["started"] is True
+    assert captured["join_calls"] == [0.5]
+
+
+def test_extract_docling_pdf_in_subprocess_times_out_and_terminates(
+    tmp_path: Path, monkeypatch
+) -> None:
+    set_locale("en")
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7")
+    lifecycle: list[str] = []
+
+    class _Conn:
+        def poll(self) -> bool:
+            return False
+
+        def recv(self) -> ExtractionResult:
+            raise AssertionError("recv should not run on timeout")
+
+        def close(self) -> None:
+            lifecycle.append("close_conn")
+
+    class _Process:
+        exitcode = None
+
+        def __init__(self, target, args) -> None:
+            del target, args
+            self._alive = True
+
+        def start(self) -> None:
+            lifecycle.append("start")
+
+        def join(self, timeout=None) -> None:
+            lifecycle.append(f"join:{timeout}")
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+        def terminate(self) -> None:
+            lifecycle.append("terminate")
+            self._alive = False
+
+        def kill(self) -> None:
+            lifecycle.append("kill")
+
+    class _Context:
+        def Pipe(self, duplex=False):
+            assert duplex is False
+            return _Conn(), _Conn()
+
+        def Process(self, target, args):
+            return _Process(target, args)
+
+    monkeypatch.setattr(
+        "dite.extractors.docling.multiprocessing.get_context",
+        lambda method: _Context(),
+    )
+
+    result = extract_docling_pdf_in_subprocess(
+        pdf_path,
+        timeout_sec=0.25,
+        locale="en",
+    )
+
+    assert result.success is False
+    assert result.extractor == "docling"
+    assert result.error == "Docling PDF extraction timed out after 0.25s"
+    assert "terminate" in lifecycle
