@@ -63,6 +63,8 @@ class ProcessingConfig:
     text_truncate_limit: int = 4000
     vlm_fallback_threshold: int = 100  # 有效内容少于此阈值时触发 VLM 回退
     docling_pdf_timeout_sec: float = 60.0
+    extract_workers: int = field(default_factory=lambda: min(4, os.cpu_count() or 1))
+    docling_pdf_workers: int = 1
 
 
 @dataclass

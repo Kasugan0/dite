@@ -166,6 +166,10 @@ class FileCache:
 
         return deleted
 
+    def enforce_size_limit(self) -> int:
+        """公开执行缓存大小治理。"""
+        return self._enforce_size_limit()
+
     def get_by_path(self, file_path: Path) -> CacheEntry | None:
         """
         根据文件路径获取缓存
@@ -236,6 +240,7 @@ class FileCache:
         file_hash: str,
         embedding: np.ndarray,
         model_version: str,
+        enforce_size_limit: bool = True,
     ) -> None:
         """更新向量缓存，不改写文档转换或 VLM 内容。"""
         conn = self._get_conn()
@@ -257,7 +262,8 @@ class FileCache:
             (str(file_path), file_hash, file_mtime, embedding_bytes, model_version),
         )
         conn.commit()
-        self._enforce_size_limit()
+        if enforce_size_limit:
+            self._enforce_size_limit()
 
     def save(
         self,
@@ -269,6 +275,7 @@ class FileCache:
         vlm_version: int | None = None,
         embedding: np.ndarray | None = None,
         model_version: str = "",
+        enforce_size_limit: bool = True,
     ) -> None:
         """
         保存缓存条目
@@ -314,7 +321,8 @@ class FileCache:
             ),
         )
         conn.commit()
-        self._enforce_size_limit()
+        if enforce_size_limit:
+            self._enforce_size_limit()
 
     def update_vlm_content(
         self,
@@ -322,6 +330,7 @@ class FileCache:
         file_hash: str,
         vlm_content: str,
         vlm_version: int,
+        enforce_size_limit: bool = True,
     ) -> None:
         """
         更新 VLM 回退内容（不影响 docling 缓存）
@@ -349,7 +358,8 @@ class FileCache:
             (str(file_path), file_hash, file_mtime, vlm_content, vlm_version),
         )
         conn.commit()
-        self._enforce_size_limit()
+        if enforce_size_limit:
+            self._enforce_size_limit()
 
     def get_embedding(
         self,
