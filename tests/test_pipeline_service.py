@@ -33,6 +33,7 @@ from dite.extractors.router import (
     VLMSamplingResult,
 )
 from dite.i18n import set_locale
+from dite.utils.api_runtime import ChatCompletionResult
 from dite.utils.hashing import compute_file_hash
 from dite.utils.logging import setup_logging
 
@@ -380,7 +381,9 @@ def test_extract_files_defers_cache_size_enforcement_until_batch_end(
         enforce_calls["count"] += 1
         return 0
 
-    monkeypatch.setattr("dite.extractors.router.extract_document", fake_extract_document)
+    monkeypatch.setattr(
+        "dite.extractors.router.extract_document", fake_extract_document
+    )
     monkeypatch.setattr(FileCache, "save", fake_save)
     monkeypatch.setattr(FileCache, "enforce_size_limit", fake_enforce)
 
@@ -471,14 +474,18 @@ def test_extract_contents_preserves_input_order_when_workers_finish_out_of_order
 def test_docling_pdf_workers_limit_concurrent_docling_subprocesses(monkeypatch) -> None:
     service = PipelineService(client=object(), config=Config(), cache=None)
     service.config.processing.docling_pdf_workers = 1
-    semaphore = threading.BoundedSemaphore(service.config.processing.docling_pdf_workers)
+    semaphore = threading.BoundedSemaphore(
+        service.config.processing.docling_pdf_workers
+    )
     active = {"count": 0, "max": 0}
     lock = threading.Lock()
+    calls: list[dict[str, object]] = []
 
     class _Extractor:
         _enable_ocr = False
         _artifacts_path = None
         _pdf_timeout_sec = 0.5
+        _device = "cpu"
 
     def fake_subprocess(
         file_path,
@@ -487,8 +494,18 @@ def test_docling_pdf_workers_limit_concurrent_docling_subprocesses(monkeypatch) 
         artifacts_path,
         timeout_sec,
         locale,
+        device,
     ) -> ExtractionResult:
-        del file_path, enable_ocr, artifacts_path, timeout_sec, locale
+        calls.append(
+            {
+                "file_path": file_path,
+                "enable_ocr": enable_ocr,
+                "artifacts_path": artifacts_path,
+                "timeout_sec": timeout_sec,
+                "locale": locale,
+                "device": device,
+            }
+        )
         with lock:
             active["count"] += 1
             active["max"] = max(active["max"], active["count"])
@@ -517,6 +534,8 @@ def test_docling_pdf_workers_limit_concurrent_docling_subprocesses(monkeypatch) 
 
     assert all(result.success for result in results)
     assert active["max"] == 1
+    assert len(calls) == 3
+    assert {call["device"] for call in calls} == {"cpu"}
 
 
 def test_extract_primary_result_routes_pdf_docling_to_subprocess(
@@ -534,7 +553,9 @@ def test_extract_primary_result_routes_pdf_docling_to_subprocess(
         lambda *args, **kwargs: extractor,
     )
 
-    def fake_subprocess(self, file_path: Path, extractor, semaphore) -> ExtractionResult:
+    def fake_subprocess(
+        self, file_path: Path, extractor, semaphore
+    ) -> ExtractionResult:
         calls["file_path"] = file_path
         calls["extractor"] = extractor
         calls["semaphore"] = semaphore
@@ -883,7 +904,11 @@ def test_extract_files_locks_down_failure_corpus_classification_baseline(
     tmp_path: Path, monkeypatch
 ) -> None:
     files: list[Path] = []
-    names = [*(f"failed-{index}.pdf" for index in range(1, 8)), "weak-1.pdf", "weak-2.pdf"]
+    names = [
+        *(f"failed-{index}.pdf" for index in range(1, 8)),
+        "weak-1.pdf",
+        "weak-2.pdf",
+    ]
     for name in names:
         path = tmp_path / name
         path.write_bytes(f"%PDF-1.7 {name}".encode())
@@ -1406,7 +1431,7 @@ def test_knn_repair_keeps_far_noise_with_threshold() -> None:
             [0.99, 0.01],
             [0.98, 0.02],
             [0.97, 0.03],  # near core cluster
-            [-1.0, 0.0],   # far from core cluster
+            [-1.0, 0.0],  # far from core cluster
         ],
         dtype=np.float32,
     )
@@ -1431,7 +1456,7 @@ def test_knn_repair_uses_dynamic_threshold() -> None:
             [0.99, 0.01],
             [0.98, 0.02],
             [0.97, 0.03],  # near core cluster
-            [-1.0, 0.0],   # far from core cluster
+            [-1.0, 0.0],  # far from core cluster
         ],
         dtype=np.float32,
     )
@@ -1447,6 +1472,166 @@ def test_knn_repair_uses_dynamic_threshold() -> None:
     assert repaired_count == 1
     assert repaired_labels[3] == 0
     assert repaired_labels[4] == -1
+
+
+def test_repair_noise_with_knn_returns_unchanged_without_noise() -> None:
+    embeddings = np.array(
+        [
+            [1.0, 0.0],
+            [0.99, 0.01],
+            [0.98, 0.02],
+        ],
+        dtype=np.float32,
+    )
+    labels = np.array([0, 0, 1], dtype=int)
+
+    repaired_labels, repaired_count = repair_noise_with_knn(
+        embeddings,
+        labels,
+        k=3,
+        distance_threshold=0.2,
+    )
+
+    assert repaired_count == 0
+    assert np.array_equal(repaired_labels, labels)
+
+
+
+def test_repair_noise_with_knn_returns_unchanged_without_core_cluster() -> None:
+    embeddings = np.array(
+        [
+            [1.0, 0.0],
+            [0.99, 0.01],
+            [0.98, 0.02],
+        ],
+        dtype=np.float32,
+    )
+    labels = np.array([-1, -1, -1], dtype=int)
+
+    repaired_labels, repaired_count = repair_noise_with_knn(
+        embeddings,
+        labels,
+        k=3,
+        distance_threshold=0.2,
+    )
+
+    assert repaired_count == 0
+    assert np.array_equal(repaired_labels, labels)
+
+
+
+def test_cluster_documents_uses_clustering_config_without_knn_when_disabled(
+    monkeypatch,
+) -> None:
+    from dite.core import clusterer
+    from dite.core.clusterer import cluster_documents
+
+    captured: dict[str, object] = {}
+
+    class _FakeHDBSCAN:
+        def __init__(
+            self,
+            *,
+            min_cluster_size,
+            min_samples,
+            cluster_selection_epsilon,
+            metric,
+            cluster_selection_method,
+        ) -> None:
+            captured["init"] = {
+                "min_cluster_size": min_cluster_size,
+                "min_samples": min_samples,
+                "cluster_selection_epsilon": cluster_selection_epsilon,
+                "metric": metric,
+                "cluster_selection_method": cluster_selection_method,
+            }
+
+        def fit_predict(self, embeddings: np.ndarray) -> np.ndarray:
+            captured["fit_predict_shape"] = embeddings.shape
+            return np.array([0, -1], dtype=int)
+
+    def fail_repair(*args, **kwargs):
+        raise AssertionError("repair_noise_with_knn should not be called")
+
+    monkeypatch.setattr(clusterer.hdbscan, "HDBSCAN", _FakeHDBSCAN)
+    monkeypatch.setattr(clusterer, "repair_noise_with_knn", fail_repair)
+
+    config = Config()
+    config.clustering.min_cluster_size = 4
+    config.clustering.min_samples = 2
+    config.clustering.cluster_selection_epsilon = 0.5
+    config.clustering.cluster_selection_method = "leaf"
+
+    labels, repaired_count = cluster_documents(
+        np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+        config=config,
+        repair_noise=False,
+    )
+
+    assert repaired_count == 0
+    assert np.array_equal(labels, np.array([0, -1], dtype=int))
+    assert captured["init"] == {
+        "min_cluster_size": 4,
+        "min_samples": 2,
+        "cluster_selection_epsilon": 0.5,
+        "metric": "euclidean",
+        "cluster_selection_method": "leaf",
+    }
+    assert captured["fit_predict_shape"] == (2, 2)
+
+
+
+def test_cluster_documents_passes_knn_overrides_to_repair(monkeypatch) -> None:
+    from dite.core import clusterer
+    from dite.core.clusterer import cluster_documents
+
+    captured: dict[str, object] = {}
+
+    class _FakeHDBSCAN:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+
+        def fit_predict(self, embeddings: np.ndarray) -> np.ndarray:
+            del embeddings
+            return np.array([0, -1], dtype=int)
+
+    def fake_repair(
+        embeddings: np.ndarray,
+        labels: np.ndarray,
+        k: int = 3,
+        distance_threshold: float | None = None,
+        item_names: list[str] | None = None,
+    ) -> tuple[np.ndarray, int]:
+        captured["shape"] = embeddings.shape
+        captured["labels"] = labels.copy()
+        captured["k"] = k
+        captured["distance_threshold"] = distance_threshold
+        captured["item_names"] = item_names
+        return np.array([0, 0], dtype=int), 1
+
+    monkeypatch.setattr(clusterer.hdbscan, "HDBSCAN", _FakeHDBSCAN)
+    monkeypatch.setattr(clusterer, "repair_noise_with_knn", fake_repair)
+
+    config = Config()
+    config.clustering.knn_k = 99
+    config.clustering.knn_distance_threshold = 0.99
+
+    labels, repaired_count = cluster_documents(
+        np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+        config=config,
+        repair_noise=True,
+        knn_k=7,
+        knn_distance_threshold=0.3,
+        item_names=["a.txt", "b.txt"],
+    )
+
+    assert repaired_count == 1
+    assert np.array_equal(labels, np.array([0, 0], dtype=int))
+    assert captured["shape"] == (2, 2)
+    assert np.array_equal(captured["labels"], np.array([0, -1], dtype=int))
+    assert captured["k"] == 7
+    assert captured["distance_threshold"] == 0.3
+    assert captured["item_names"] == ["a.txt", "b.txt"]
 
 
 def test_scan_files_excludes_target_directory(tmp_path: Path) -> None:
@@ -1564,7 +1749,9 @@ def test_pipeline_verbose_logs_include_extraction_summary(
     ):
         return labels, {0: "Notes"}, 0
 
-    monkeypatch.setattr("dite.extractors.router.extract_document", fake_extract_document)
+    monkeypatch.setattr(
+        "dite.extractors.router.extract_document", fake_extract_document
+    )
     monkeypatch.setattr(
         "dite.extractors.router.needs_vlm_fallback", lambda *args, **kwargs: False
     )
@@ -1643,6 +1830,639 @@ def test_generate_all_cluster_names_debug_uses_letter_labels(capsys) -> None:
     assert "Cluster B named Beta" in output
     assert "Cluster 0 named" not in output
     assert "Cluster 2 named" not in output
+
+
+def test_generate_all_cluster_names_limits_cluster_naming_workers(
+    monkeypatch,
+) -> None:
+    from dite.core import clusterer
+    from dite.core.clusterer import generate_all_cluster_names
+
+    current = 0
+    max_concurrent = 0
+    lock = threading.Lock()
+    started_two = threading.Event()
+
+    def fake_generate_cluster_name(
+        client,
+        cluster_embeddings,
+        sample_contents,
+        sample_names,
+        *,
+        config,
+        top_k=5,
+        llm_model=None,
+    ) -> str:
+        del client, cluster_embeddings, sample_contents, config, top_k, llm_model
+        nonlocal current, max_concurrent
+        with lock:
+            current += 1
+            max_concurrent = max(max_concurrent, current)
+            if current == 2:
+                started_two.set()
+        started_two.wait(timeout=0.2)
+        time.sleep(0.02)
+        with lock:
+            current -= 1
+        return Path(sample_names[0]).stem.replace("-", " ").title()
+
+    monkeypatch.setattr(clusterer, "generate_cluster_name", fake_generate_cluster_name)
+
+    class _Chat:
+        completions = object()
+
+    class _Client:
+        chat = _Chat()
+
+    config = Config()
+    config.processing.cluster_naming_workers = 2
+    labels = np.array([3, 1, 2, 0], dtype=int)
+
+    _, cluster_names, merged_count = generate_all_cluster_names(
+        client=_Client(),
+        labels=labels,
+        contents=["a", "b", "c", "d"],
+        files=[
+            Path("cluster-3.txt"),
+            Path("cluster-1.txt"),
+            Path("cluster-2.txt"),
+            Path("cluster-0.txt"),
+        ],
+        config=config,
+        embeddings=None,
+        merge_same_name=False,
+        llm_model="dummy-model",
+    )
+
+    assert merged_count == 0
+    assert max_concurrent == 2
+    assert cluster_names == {
+        0: "Cluster 0",
+        1: "Cluster 1",
+        2: "Cluster 2",
+        3: "Cluster 3",
+    }
+
+
+def test_generate_all_cluster_names_preserves_label_mapping_out_of_order_completion(
+    monkeypatch,
+) -> None:
+    from dite.core import clusterer
+    from dite.core.clusterer import generate_all_cluster_names
+
+    delays = {
+        "cluster-2-a.txt": 0.08,
+        "cluster-5-a.txt": 0.03,
+        "cluster-7-a.txt": 0.0,
+    }
+
+    def fake_generate_cluster_name(
+        client,
+        cluster_embeddings,
+        sample_contents,
+        sample_names,
+        *,
+        config,
+        top_k=5,
+        llm_model=None,
+    ) -> str:
+        del client, cluster_embeddings, sample_contents, config, top_k, llm_model
+        first_name = sample_names[0]
+        time.sleep(delays[first_name])
+        return f"Name {Path(first_name).stem.split('-')[1]}"
+
+    monkeypatch.setattr(clusterer, "generate_cluster_name", fake_generate_cluster_name)
+
+    class _Chat:
+        completions = object()
+
+    class _Client:
+        chat = _Chat()
+
+    config = Config()
+    config.processing.cluster_naming_workers = 3
+    labels = np.array([5, 2, 5, 7, 2], dtype=int)
+
+    new_labels, cluster_names, merged_count = generate_all_cluster_names(
+        client=_Client(),
+        labels=labels,
+        contents=["a", "b", "c", "d", "e"],
+        files=[
+            Path("cluster-5-a.txt"),
+            Path("cluster-2-a.txt"),
+            Path("cluster-5-b.txt"),
+            Path("cluster-7-a.txt"),
+            Path("cluster-2-b.txt"),
+        ],
+        config=config,
+        embeddings=None,
+        merge_same_name=False,
+        llm_model="dummy-model",
+    )
+
+    assert merged_count == 0
+    assert np.array_equal(new_labels, labels)
+    assert cluster_names == {
+        2: "Name 2",
+        5: "Name 5",
+        7: "Name 7",
+    }
+
+
+def test_generate_all_cluster_names_merges_duplicate_names_after_concurrent_completion(
+    monkeypatch,
+) -> None:
+    from dite.core import clusterer
+    from dite.core.clusterer import generate_all_cluster_names
+
+    delays = {
+        "cluster-1-a.txt": 0.08,
+        "cluster-3-a.txt": 0.0,
+        "cluster-5-a.txt": 0.03,
+    }
+    names = {
+        "cluster-1-a.txt": "Shared Topic",
+        "cluster-3-a.txt": "Unique Topic",
+        "cluster-5-a.txt": "Shared Topic",
+    }
+
+    def fake_generate_cluster_name(
+        client,
+        cluster_embeddings,
+        sample_contents,
+        sample_names,
+        *,
+        config,
+        top_k=5,
+        llm_model=None,
+    ) -> str:
+        del client, cluster_embeddings, sample_contents, config, top_k, llm_model
+        first_name = sample_names[0]
+        time.sleep(delays[first_name])
+        return names[first_name]
+
+    monkeypatch.setattr(clusterer, "generate_cluster_name", fake_generate_cluster_name)
+
+    class _Chat:
+        completions = object()
+
+    class _Client:
+        chat = _Chat()
+
+    config = Config()
+    config.processing.cluster_naming_workers = 3
+    labels = np.array([5, 1, 3, 5, 1], dtype=int)
+
+    merged_labels, cluster_names, merged_count = generate_all_cluster_names(
+        client=_Client(),
+        labels=labels,
+        contents=["a", "b", "c", "d", "e"],
+        files=[
+            Path("cluster-5-a.txt"),
+            Path("cluster-1-a.txt"),
+            Path("cluster-3-a.txt"),
+            Path("cluster-5-b.txt"),
+            Path("cluster-1-b.txt"),
+        ],
+        config=config,
+        embeddings=None,
+        merge_same_name=True,
+        llm_model="dummy-model",
+    )
+
+    assert merged_count == 1
+    assert np.array_equal(merged_labels, np.array([1, 1, 3, 1, 1], dtype=int))
+    assert cluster_names == {
+        1: "Shared Topic",
+        3: "Unique Topic",
+    }
+
+
+def test_generate_all_cluster_names_prewarms_client_resources_before_worker_threads(
+    monkeypatch,
+) -> None:
+    from dite.core import clusterer
+    from dite.core.clusterer import generate_all_cluster_names
+
+    tracker = {
+        "chat_init_threads": [],
+        "completions_init_threads": [],
+    }
+    main_thread_id = threading.get_ident()
+
+    class _ChatResource:
+        def __init__(self) -> None:
+            self._completions = None
+
+        @property
+        def completions(self):
+            if self._completions is None:
+                tracker["completions_init_threads"].append(threading.get_ident())
+                self._completions = object()
+            return self._completions
+
+    class _Client:
+        def __init__(self) -> None:
+            self._chat = None
+
+        @property
+        def chat(self):
+            if self._chat is None:
+                tracker["chat_init_threads"].append(threading.get_ident())
+                self._chat = _ChatResource()
+            return self._chat
+
+    def fake_generate_cluster_name(
+        client,
+        cluster_embeddings,
+        sample_contents,
+        sample_names,
+        *,
+        config,
+        top_k=5,
+        llm_model=None,
+    ) -> str:
+        del cluster_embeddings, sample_contents, config, top_k, llm_model
+        _ = client.chat.completions
+        time.sleep(0.01)
+        return Path(sample_names[0]).stem
+
+    monkeypatch.setattr(clusterer, "generate_cluster_name", fake_generate_cluster_name)
+
+    config = Config()
+    config.processing.cluster_naming_workers = 3
+    labels = np.array([0, 1, 2], dtype=int)
+
+    _, cluster_names, merged_count = generate_all_cluster_names(
+        client=_Client(),
+        labels=labels,
+        contents=["a", "b", "c"],
+        files=[
+            Path("cluster-0.txt"),
+            Path("cluster-1.txt"),
+            Path("cluster-2.txt"),
+        ],
+        config=config,
+        embeddings=None,
+        merge_same_name=False,
+        llm_model="dummy-model",
+    )
+
+    assert merged_count == 0
+    assert cluster_names == {
+        0: "cluster-0",
+        1: "cluster-1",
+        2: "cluster-2",
+    }
+    assert tracker["chat_init_threads"] == [main_thread_id]
+    assert tracker["completions_init_threads"] == [main_thread_id]
+
+
+def test_generate_all_cluster_names_integration_merges_same_names_deterministically(
+    ) -> None:
+    from dite.core.clusterer import generate_all_cluster_names
+
+    calls: list[str] = []
+
+    class _Completions:
+        def create(self, **kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            calls.append(prompt)
+            if "Financial Statement" in prompt:
+                time.sleep(0.01)
+                name = "Financial Reports"
+            else:
+                time.sleep(0.04 if "cluster-8" in prompt else 0.0)
+                name = "Linear Algebra Notes"
+
+            class _Message:
+                def __init__(self, content: str) -> None:
+                    self.content = content
+
+            class _Choice:
+                def __init__(self, content: str) -> None:
+                    self.message = _Message(content)
+
+            class _Response:
+                def __init__(self, content: str) -> None:
+                    self.choices = [_Choice(content)]
+
+            return _Response(name)
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    config = Config()
+    config.processing.cluster_naming_workers = 3
+    labels = np.array([8, 8, 3, 3, 5, 5], dtype=int)
+
+    merged_labels, cluster_names, merged_count = generate_all_cluster_names(
+        client=_Client(),
+        labels=labels,
+        contents=[
+            "Linear Algebra Workbook\nMatrices and vectors.",
+            "Linear Algebra Exercises\nEigenvalues and bases.",
+            "Linear Algebra Lecture Notes\nVector spaces and rank.",
+            "Linear Algebra Reference\nMatrix decompositions.",
+            "Financial Statement Analysis\nCash flow and balance sheet.",
+            "Financial Statement Basics\nIncome statement overview.",
+        ],
+        files=[
+            Path("cluster-8-a.txt"),
+            Path("cluster-8-b.txt"),
+            Path("cluster-3-a.txt"),
+            Path("cluster-3-b.txt"),
+            Path("cluster-5-a.txt"),
+            Path("cluster-5-b.txt"),
+        ],
+        config=config,
+        embeddings=None,
+        merge_same_name=True,
+        llm_model="dummy-model",
+    )
+
+    assert len(calls) == 3
+    assert merged_count == 1
+    assert np.array_equal(merged_labels, np.array([3, 3, 3, 3, 5, 5], dtype=int))
+    assert cluster_names == {
+        3: "Linear Algebra Notes",
+        5: "Financial Reports",
+    }
+
+
+def test_generate_all_cluster_names_skips_client_access_for_noise_only_input() -> None:
+    from dite.core.clusterer import generate_all_cluster_names
+
+    class _Client:
+        @property
+        def chat(self):
+            raise AssertionError("noise-only input should not access client resources")
+
+    labels = np.array([-1, -1, -1], dtype=int)
+    new_labels, cluster_names, merged_count = generate_all_cluster_names(
+        client=_Client(),
+        labels=labels,
+        contents=["a", "b", "c"],
+        files=[Path("a.txt"), Path("b.txt"), Path("c.txt")],
+        config=Config(),
+        embeddings=None,
+        merge_same_name=True,
+        llm_model="dummy-model",
+    )
+
+    assert np.array_equal(new_labels, labels)
+    assert cluster_names == {}
+    assert merged_count == 0
+
+
+def test_generate_all_cluster_names_clamps_non_positive_worker_count_to_one() -> None:
+    from dite.core.clusterer import generate_all_cluster_names
+
+    current = 0
+    max_concurrent = 0
+    lock = threading.Lock()
+
+    class _Completions:
+        def create(self, **kwargs):
+            del kwargs
+            nonlocal current, max_concurrent
+            with lock:
+                current += 1
+                max_concurrent = max(max_concurrent, current)
+            time.sleep(0.02)
+            with lock:
+                current -= 1
+
+            class _Message:
+                content = "Stable Topic"
+
+            class _Choice:
+                message = _Message()
+
+            class _Response:
+                choices = [_Choice()]
+
+            return _Response()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    config = Config()
+    config.processing.cluster_naming_workers = 0
+    labels = np.array([0, 0, 1, 1], dtype=int)
+
+    new_labels, cluster_names, merged_count = generate_all_cluster_names(
+        client=_Client(),
+        labels=labels,
+        contents=[
+            "Topic Zero\nAlpha",
+            "Topic Zero\nBeta",
+            "Topic One\nGamma",
+            "Topic One\nDelta",
+        ],
+        files=[
+            Path("zero-a.txt"),
+            Path("zero-b.txt"),
+            Path("one-a.txt"),
+            Path("one-b.txt"),
+        ],
+        config=config,
+        embeddings=None,
+        merge_same_name=False,
+        llm_model="dummy-model",
+    )
+
+    assert max_concurrent == 1
+    assert merged_count == 0
+    assert np.array_equal(new_labels, labels)
+    assert cluster_names == {
+        0: "Stable Topic",
+        1: "Stable Topic",
+    }
+
+
+def test_generate_all_cluster_names_keeps_duplicate_names_when_merge_disabled() -> None:
+    from dite.core.clusterer import generate_all_cluster_names
+
+    class _Completions:
+        def create(self, **kwargs):
+            del kwargs
+
+            class _Message:
+                content = "Shared Topic"
+
+            class _Choice:
+                message = _Message()
+
+            class _Response:
+                choices = [_Choice()]
+
+            return _Response()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    labels = np.array([4, 4, 7, 7], dtype=int)
+    new_labels, cluster_names, merged_count = generate_all_cluster_names(
+        client=_Client(),
+        labels=labels,
+        contents=[
+            "Topic Four\nAlpha",
+            "Topic Four\nBeta",
+            "Topic Seven\nGamma",
+            "Topic Seven\nDelta",
+        ],
+        files=[
+            Path("four-a.txt"),
+            Path("four-b.txt"),
+            Path("seven-a.txt"),
+            Path("seven-b.txt"),
+        ],
+        config=Config(),
+        embeddings=None,
+        merge_same_name=False,
+        llm_model="dummy-model",
+    )
+
+    assert merged_count == 0
+    assert np.array_equal(new_labels, labels)
+    assert cluster_names == {
+        4: "Shared Topic",
+        7: "Shared Topic",
+    }
+
+
+def test_generate_all_cluster_names_uses_async_request_runtime_when_available(
+    monkeypatch,
+) -> None:
+    from dite.core import clusterer
+    from dite.core.clusterer import generate_all_cluster_names
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.calls: list[list[object]] = []
+
+        def run_cluster_naming_batch(self, requests):
+            self.calls.append(requests)
+            return [
+                ChatCompletionResult(
+                    content="Linear Algebra",
+                    error=None,
+                    queue_wait_sec=0.01,
+                    request_elapsed_sec=0.02,
+                ),
+                ChatCompletionResult(
+                    content="Financial Reports",
+                    error=None,
+                    queue_wait_sec=0.01,
+                    request_elapsed_sec=0.03,
+                ),
+            ]
+
+    def fail_generate_cluster_name(*args, **kwargs):
+        raise AssertionError("sync generate_cluster_name should not run when runtime exists")
+
+    monkeypatch.setattr(clusterer, "generate_cluster_name", fail_generate_cluster_name)
+
+    class _Chat:
+        completions = object()
+
+    class _Client:
+        base_url = "https://api.example.com/v1"
+        chat = _Chat()
+
+    runtime = _Runtime()
+    labels = np.array([0, 0, 1, 1], dtype=int)
+    config = Config()
+    new_labels, cluster_names, merged_count = generate_all_cluster_names(
+        client=_Client(),
+        labels=labels,
+        contents=[
+            "Matrices and vectors",
+            "Linear transformations",
+            "Cash flow statement",
+            "Balance sheet review",
+        ],
+        files=[
+            Path("linear-a.txt"),
+            Path("linear-b.txt"),
+            Path("finance-a.txt"),
+            Path("finance-b.txt"),
+        ],
+        config=config,
+        embeddings=None,
+        merge_same_name=False,
+        llm_model="dummy-model",
+        request_runtime=runtime,
+    )
+
+    assert merged_count == 0
+    assert np.array_equal(new_labels, labels)
+    assert cluster_names == {
+        0: "Linear Algebra",
+        1: "Financial Reports",
+    }
+    assert len(runtime.calls) == 1
+    assert len(runtime.calls[0]) == 2
+
+
+def test_generate_all_cluster_names_labels_invalid_model_output_per_cluster() -> None:
+    from dite.core.clusterer import generate_all_cluster_names
+
+    class _Completions:
+        def create(self, **kwargs):
+            del kwargs
+
+            class _Message:
+                content = "cover"
+
+            class _Choice:
+                message = _Message()
+
+            class _Response:
+                choices = [_Choice()]
+
+            return _Response()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    set_locale("en")
+    labels = np.array([2, 2, 5, 5], dtype=int)
+    new_labels, cluster_names, merged_count = generate_all_cluster_names(
+        client=_Client(),
+        labels=labels,
+        contents=["   ", "\n\n", "   ", "\n\n"],
+        files=[
+            Path("cover.pdf"),
+            Path("scan.png"),
+            Path("cover(1).pdf"),
+            Path("scan(1).png"),
+        ],
+        config=Config(),
+        embeddings=None,
+        merge_same_name=False,
+        llm_model="dummy-model",
+    )
+
+    assert merged_count == 0
+    assert np.array_equal(new_labels, labels)
+    assert cluster_names == {
+        2: "Unnamed-2",
+        5: "Unnamed-5",
+    }
 
 
 def test_merge_clusters_by_name_merges_duplicate_names() -> None:
@@ -1767,6 +2587,342 @@ def test_generate_cluster_name_truncates_long_contents_before_api_call() -> None
     assert "A" * (CLUSTER_NAME_EXCERPT_LIMIT + 100) not in prompt
     assert captured[0]["max_tokens"] == 64
     assert captured[0]["extra_body"] == {"enable_thinking": False}
+
+
+def test_generate_cluster_name_uses_representative_top_k_samples_from_embeddings() -> None:
+    from dite.core.clusterer import generate_cluster_name
+
+    captured: list[dict] = []
+
+    class _Completions:
+        def create(self, **kwargs):
+            captured.append(kwargs)
+
+            class _Message:
+                content = "Study Materials"
+
+            class _Choice:
+                message = _Message()
+
+            class _Response:
+                choices = [_Choice()]
+
+            return _Response()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    set_locale("en")
+    name = generate_cluster_name(
+        client=_Client(),
+        cluster_embeddings=np.array(
+            [
+                [1.0, 0.0],
+                [0.98, 0.02],
+                [0.97, 0.03],
+                [0.96, 0.04],
+                [0.95, 0.05],
+                [-1.0, 0.0],
+            ],
+            dtype=np.float32,
+        ),
+        sample_contents=[
+            "Doc 0\nTopic A summary.",
+            "Doc 1\nTopic A summary.",
+            "Doc 2\nTopic A summary.",
+            "Doc 3\nTopic A summary.",
+            "Doc 4\nTopic A summary.",
+            "Outlier Doc\nTotally different topic.",
+        ],
+        sample_names=[
+            "doc-0.txt",
+            "doc-1.txt",
+            "doc-2.txt",
+            "doc-3.txt",
+            "doc-4.txt",
+            "outlier.txt",
+        ],
+        config=Config(),
+        llm_model="dummy-model",
+    )
+
+    assert name == "Study Materials"
+    prompt = captured[0]["messages"][0]["content"]
+    assert "outlier.txt" not in prompt
+    assert "doc-0.txt" in prompt
+    assert "doc-1.txt" in prompt
+    assert "doc-2.txt" in prompt
+    assert "doc-3.txt" in prompt
+    assert "doc-4.txt" in prompt
+
+
+def test_generate_cluster_name_uses_file_name_prompt_when_all_contents_blank() -> None:
+    from dite.core.clusterer import generate_cluster_name
+
+    captured: list[dict] = []
+
+    class _Completions:
+        def create(self, **kwargs):
+            captured.append(kwargs)
+
+            class _Message:
+                content = "Machine Learning Notes"
+
+            class _Choice:
+                message = _Message()
+
+            class _Response:
+                choices = [_Choice()]
+
+            return _Response()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    set_locale("en")
+    name = generate_cluster_name(
+        client=_Client(),
+        cluster_embeddings=None,
+        sample_contents=["   ", "\n\n"],
+        sample_names=["machine-learning-notes.pdf", "neural-network-summary.md"],
+        config=Config(),
+        llm_model="dummy-model",
+    )
+
+    assert name == "Machine Learning Notes"
+    prompt = captured[0]["messages"][0]["content"]
+    assert "These files belong to the same category" in prompt
+    assert "machine-learning-notes.pdf" in prompt
+    assert "neural-network-summary.md" in prompt
+    assert "Content excerpt:" not in prompt
+
+
+def test_generate_cluster_name_falls_back_to_file_name_when_contents_blank_and_api_fails() -> None:
+    from dite.core.clusterer import generate_cluster_name
+
+    class _Completions:
+        def create(self, **kwargs):
+            raise RuntimeError("api down")
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    set_locale("en")
+    name = generate_cluster_name(
+        client=_Client(),
+        cluster_embeddings=None,
+        sample_contents=["   ", "\n\n"],
+        sample_names=["machine-learning-notes.pdf", "neural-network-summary.md"],
+        config=Config(),
+        llm_model="dummy-model",
+    )
+
+    assert name == "machine learning notes"
+
+
+def test_generate_cluster_name_returns_unnamed_when_no_signal_is_available() -> None:
+    from dite.core.clusterer import generate_cluster_name
+
+    class _Completions:
+        def create(self, **kwargs):
+            raise RuntimeError("api down")
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    set_locale("en")
+    name = generate_cluster_name(
+        client=_Client(),
+        cluster_embeddings=None,
+        sample_contents=["   ", "\n\n"],
+        sample_names=["scan.pdf", "cover.png"],
+        config=Config(),
+        llm_model="dummy-model",
+    )
+
+    assert name == "Unnamed"
+
+
+def test_generate_cluster_name_builds_zh_prompt_from_content_samples() -> None:
+    from dite.core.clusterer import generate_cluster_name
+
+    captured: list[dict] = []
+
+    class _Completions:
+        def create(self, **kwargs):
+            captured.append(kwargs)
+
+            class _Message:
+                content = "线性代数"
+
+            class _Choice:
+                message = _Message()
+
+            class _Response:
+                choices = [_Choice()]
+
+            return _Response()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    set_locale("zh-CN")
+    name = generate_cluster_name(
+        client=_Client(),
+        cluster_embeddings=None,
+        sample_contents=["线性代数导论\n矩阵、向量与特征值。"],
+        sample_names=["linear-algebra.pdf"],
+        config=Config(),
+        llm_model="dummy-model",
+    )
+
+    assert name == "线性代数"
+    prompt = captured[0]["messages"][0]["content"]
+    assert "以下是属于同一类别的代表文档信息：" in prompt
+    assert "文件名: linear-algebra.pdf" in prompt
+    assert "标题候选: 线性代数导论" in prompt
+    assert "请用2-4个中文词为这个类别命名。" in prompt
+
+
+
+def test_generate_cluster_name_truncates_long_valid_model_output() -> None:
+    from dite.core.clusterer import CLUSTER_NAME_OUTPUT_LIMIT, generate_cluster_name
+
+    class _Completions:
+        def create(self, **kwargs):
+            del kwargs
+
+            class _Message:
+                content = "Advanced Linear Algebra Reference Materials"
+
+            class _Choice:
+                message = _Message()
+
+            class _Response:
+                choices = [_Choice()]
+
+            return _Response()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    set_locale("en")
+    name = generate_cluster_name(
+        client=_Client(),
+        cluster_embeddings=None,
+        sample_contents=["Linear Algebra Reference\nMatrices and decompositions."],
+        sample_names=["linear-algebra-reference.pdf"],
+        config=Config(),
+        llm_model="dummy-model",
+    )
+
+    assert name == "Advanced Linear Algebra Reference Materials"[
+        :CLUSTER_NAME_OUTPUT_LIMIT
+    ]
+
+
+def test_cluster_naming_helper_normalization_and_invalid_detection() -> None:
+    from dite.core.clusterer import (
+        _is_invalid_cluster_name,
+        _normalize_cluster_name_text,
+    )
+
+    assert _normalize_cluster_name_text('  <!-- image -->  ## "Linear   Algebra"  ') == (
+        "Linear Algebra"
+    )
+    assert _is_invalid_cluster_name("cover") is True
+    assert _is_invalid_cluster_name("Page 3") is True
+    assert _is_invalid_cluster_name("线性代数") is False
+
+
+
+def test_cluster_naming_helper_author_and_title_detection() -> None:
+    from dite.core.clusterer import _extract_title_like_line, _looks_like_author_line
+
+    assert _looks_like_author_line("Shuo Wang * Chunlong Xia") is True
+    assert _looks_like_author_line("王硕 * 夏春龙") is False
+    assert (
+        _extract_title_like_line(
+            "<!-- image -->\nShuo Wang * Chunlong Xia\nDocument Intelligence\n摘要"
+        )
+        == "Document Intelligence"
+    )
+
+
+
+def test_cluster_naming_helper_file_name_and_heuristic_fallbacks() -> None:
+    from dite.core.clusterer import (
+        _fallback_name_from_file_name,
+        _heuristic_cluster_name,
+    )
+
+    assert _fallback_name_from_file_name("linear-algebra (1).pdf") == "linear algebra"
+    assert _fallback_name_from_file_name("scan.pdf") == ""
+    assert _heuristic_cluster_name(
+        ["   ", "\n\n"],
+        ["linear-algebra-notes.pdf", "scan.png"],
+    ) == "linear algebra notes"
+
+
+
+def test_cluster_naming_helper_debug_tokens_and_labels_roll_over() -> None:
+    from dite.core.clusterer import _build_cluster_debug_labels, _cluster_debug_token
+
+    assert _cluster_debug_token(25) == "Z"
+    assert _cluster_debug_token(26) == "AA"
+    assert _cluster_debug_token(27) == "AB"
+    assert _build_cluster_debug_labels(np.array([100, 2, 30], dtype=int)) == {
+        2: "A",
+        30: "B",
+        100: "C",
+    }
+
+
+
+def test_cluster_naming_helper_builds_zh_file_name_only_prompt() -> None:
+    from dite.core.clusterer import _build_cluster_naming_prompt
+
+    set_locale("zh-CN")
+    prompt = _build_cluster_naming_prompt([], ["a.pdf", "b.pdf", "c.pdf"], 2)
+
+    assert "以下文件属于同一类别，请根据文件名推测类别：" in prompt
+    assert "a.pdf" in prompt
+    assert "b.pdf" in prompt
+    assert "c.pdf" not in prompt
+    assert "请用2-4个中文词为这个类别命名。" in prompt
+
+
+
+def test_cluster_naming_helper_compact_sample_uses_file_name_when_title_missing() -> None:
+    from dite.core.clusterer import _compact_sample_for_naming
+
+    set_locale("en")
+    sample = _compact_sample_for_naming(
+        "linear-algebra-reference.pdf",
+        "<!-- image -->\ncover\n",
+    )
+
+    assert "File name: linear-algebra-reference.pdf" in sample
+    assert "Title candidate: linear algebra reference" in sample
+    assert "Content excerpt: <!-- image --> cover" in sample
 
 
 def test_generate_cluster_name_uses_heuristic_when_response_is_empty() -> None:
