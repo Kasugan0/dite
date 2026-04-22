@@ -15,6 +15,14 @@ class APIConfig:
 
     base_url: str = ""
     api_key: str = ""
+    connect_timeout_sec: float = 5.0
+    read_timeout_sec: float = 60.0
+    write_timeout_sec: float = 60.0
+    pool_timeout_sec: float = 5.0
+    max_retries: int = 2
+    max_connections: int = 32
+    max_keepalive_connections: int = 16
+    keepalive_expiry_sec: float = 5.0
 
 
 @dataclass
@@ -229,6 +237,12 @@ def _dict_to_config(data: dict[str, Any]) -> Config:
 
     if "i18n" in data:
         config.i18n = I18nConfig(**data["i18n"])
+
+    if config.api.max_keepalive_connections > config.api.max_connections:
+        raise ValueError(
+            "api.max_keepalive_connections must be less than or equal to "
+            "api.max_connections"
+        )
 
     return config
 

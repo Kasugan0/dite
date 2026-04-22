@@ -20,6 +20,7 @@ from dite.config import Config, load_config
 from dite.core.clusterer import _build_cluster_debug_labels
 from dite.core.embedder import get_embedding_cache_version
 from dite.i18n import set_locale, t
+from dite.utils.api_runtime import build_sync_openai_client
 from dite.utils.llm import format_api_error
 from dite.utils.logging import get_logger, setup_logging
 
@@ -218,10 +219,7 @@ def _get_app_config(ctx: typer.Context | None) -> Config:
 
 def _get_client(config: Config) -> OpenAI:
     """获取 OpenAI 兼容客户端"""
-    return OpenAI(
-        api_key=config.api.api_key,
-        base_url=config.api.base_url,
-    )
+    return build_sync_openai_client(config)
 
 
 def _run_pipeline_or_exit(
