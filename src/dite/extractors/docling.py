@@ -124,6 +124,7 @@ def _docling_pdf_extract_child(
     enable_ocr: bool,
     artifacts_path: str | None,
     locale: str,
+    device: str,
     conn: Connection,
 ) -> None:
     try:
@@ -132,6 +133,7 @@ def _docling_pdf_extract_child(
             enable_ocr=enable_ocr,
             artifacts_path=Path(artifacts_path) if artifacts_path is not None else None,
             pdf_timeout_sec=None,
+            device=device,
         )
         conn.send(extractor.extract(Path(file_path)))
     finally:
@@ -145,6 +147,7 @@ def extract_docling_pdf_in_subprocess(
     artifacts_path: Path | None = None,
     timeout_sec: float | None = 60.0,
     locale: str,
+    device: str = "auto",
 ) -> ExtractionResult:
     ctx = multiprocessing.get_context("spawn")
     parent_conn, child_conn = ctx.Pipe(duplex=False)
@@ -155,6 +158,7 @@ def extract_docling_pdf_in_subprocess(
             enable_ocr,
             str(artifacts_path) if artifacts_path is not None else None,
             locale,
+            device,
             child_conn,
         ),
     )
@@ -207,19 +211,23 @@ class DoclingExtractor(BaseExtractor):
         enable_ocr: bool = False,
         artifacts_path: Path | None = None,
         pdf_timeout_sec: float | None = 60.0,
+        device: str = "auto",
     ):
         """
         Args:
             enable_ocr: 是否启用 OCR（默认禁用，因为非常慢）
+            device: Docling 推理设备（auto/cpu/cuda/cuda:N/mps）
         """
         self._converter = None
         self._enable_ocr = enable_ocr
         self._artifacts_path = artifacts_path or get_docling_pdf_artifacts_path()
         self._pdf_timeout_sec = pdf_timeout_sec
+        self._device = device
 
     def _get_converter(self):
         """延迟加载 Docling（避免启动时的开销）"""
         if self._converter is None:
+            from docling.datamodel.accelerator_options import AcceleratorOptions
             from docling.datamodel.pipeline_options import PdfPipelineOptions
             from docling.document_converter import DocumentConverter, PdfFormatOption
 
@@ -230,6 +238,7 @@ class DoclingExtractor(BaseExtractor):
             pdf_opts = PdfPipelineOptions()
             pdf_opts.do_ocr = self._enable_ocr  # 禁用 OCR 大幅加速
             pdf_opts.artifacts_path = self._artifacts_path
+            pdf_opts.accelerator_options = AcceleratorOptions(device=self._device)
 
             self._converter = DocumentConverter(
                 format_options={

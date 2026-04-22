@@ -85,7 +85,8 @@ class ExtractorRegistry:
     def get_docling(self) -> DoclingExtractor:
         if self._docling is None:
             self._docling = DoclingExtractor(
-                pdf_timeout_sec=self.config.processing.docling_pdf_timeout_sec
+                pdf_timeout_sec=self.config.processing.docling_pdf_timeout_sec,
+                device=self.config.processing.docling_device,
             )
         return self._docling
 

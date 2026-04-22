@@ -117,6 +117,61 @@ def test_docling_pdf_times_out(tmp_path: Path, monkeypatch) -> None:
     assert result.error == "Docling PDF extraction timed out after 0.01s"
 
 
+def test_docling_extractor_passes_configured_device_to_accelerator_options(
+    tmp_path: Path, monkeypatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeAcceleratorOptions:
+        def __init__(self, *, device: str) -> None:
+            captured["device"] = device
+
+    class _FakePdfPipelineOptions:
+        def __init__(self) -> None:
+            self.do_ocr = True
+            self.artifacts_path = None
+            self.accelerator_options = None
+
+    class _FakePdfFormatOption:
+        def __init__(self, *, pipeline_options) -> None:
+            captured["pipeline_options"] = pipeline_options
+
+    class _FakeDocumentConverter:
+        def __init__(self, *, format_options) -> None:
+            captured["format_options"] = format_options
+
+    monkeypatch.setattr(
+        "docling.datamodel.accelerator_options.AcceleratorOptions",
+        _FakeAcceleratorOptions,
+    )
+    monkeypatch.setattr(
+        "docling.datamodel.pipeline_options.PdfPipelineOptions",
+        _FakePdfPipelineOptions,
+    )
+    monkeypatch.setattr(
+        "docling.document_converter.PdfFormatOption",
+        _FakePdfFormatOption,
+    )
+    monkeypatch.setattr(
+        "docling.document_converter.DocumentConverter",
+        _FakeDocumentConverter,
+    )
+
+    extractor = DoclingExtractor(
+        artifacts_path=tmp_path,
+        pdf_timeout_sec=60.0,
+        device="cpu",
+    )
+    converter = extractor._get_converter()
+
+    assert isinstance(converter, _FakeDocumentConverter)
+    assert captured["device"] == "cpu"
+    pipeline_options = captured["pipeline_options"]
+    assert pipeline_options.do_ocr is False
+    assert pipeline_options.artifacts_path == tmp_path
+    assert pipeline_options.accelerator_options is not None
+
+
 def test_extract_docling_pdf_in_subprocess_returns_child_result(
     tmp_path: Path, monkeypatch
 ) -> None:
