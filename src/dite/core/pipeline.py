@@ -1,7 +1,9 @@
 """Shared document processing pipeline for scan and organize commands."""
 
 import concurrent.futures
+import inspect
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,6 +23,7 @@ from dite.extractors.router import (
     resolve_document_extraction,
 )
 from dite.i18n import get_locale, t
+from dite.utils.api_runtime import AsyncRequestRuntime
 from dite.utils.hashing import compute_file_hash
 from dite.utils.logging import get_logger
 
@@ -127,9 +130,38 @@ class PipelineService:
         self.config = config
         self.cache = cache
         self.logger = get_logger()
+        self._request_runtime: AsyncRequestRuntime | None = None
 
     def _make_extractor_registry(self) -> ExtractorRegistry:
         return ExtractorRegistry(config=self.config, client=self.client)
+
+    @staticmethod
+    def _supports_keyword_arg(func: object, keyword: str) -> bool:
+        try:
+            signature = inspect.signature(func)
+        except (TypeError, ValueError):
+            return False
+
+        for parameter in signature.parameters.values():
+            if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+                return True
+        return keyword in signature.parameters
+
+    @contextmanager
+    def _request_runtime_scope(self):
+        runtime: AsyncRequestRuntime | None = None
+        if isinstance(self.client, OpenAI) and self.config.api.base_url and self.config.api.api_key:
+            runtime = AsyncRequestRuntime(self.config)
+        previous_runtime = self._request_runtime
+        if runtime is not None:
+            runtime.start()
+        self._request_runtime = runtime
+        try:
+            yield runtime
+        finally:
+            self._request_runtime = previous_runtime
+            if runtime is not None:
+                runtime.close()
 
     @staticmethod
     def _merge_summary_delta(
@@ -180,11 +212,18 @@ class PipelineService:
 
         from dite.extractors import router
 
+        extract_kwargs = {
+            "config": self.config,
+            "registry": registry,
+        }
+        if self._request_runtime is not None and self._supports_keyword_arg(
+            router.extract_document, "request_runtime"
+        ):
+            extract_kwargs["request_runtime"] = self._request_runtime
         return router.extract_document(
             file_path,
             self.client,
-            config=self.config,
-            registry=registry,
+            **extract_kwargs,
         )
 
     def _extract_content_work_item(
@@ -263,15 +302,22 @@ class PipelineService:
                 )
             )
 
+        resolve_kwargs = {
+            "config": self.config,
+            "enable_vlm_fallback": True,
+            "allow_vlm_api": options.allow_vlm_api,
+            "cached_vlm_content": cached_vlm_content,
+            "primary_result": primary_result,
+            "registry": registry,
+        }
+        if self._request_runtime is not None and self._supports_keyword_arg(
+            resolve_document_extraction, "request_runtime"
+        ):
+            resolve_kwargs["request_runtime"] = self._request_runtime
         resolved = resolve_document_extraction(
             file,
             self.client,
-            config=self.config,
-            enable_vlm_fallback=True,
-            allow_vlm_api=options.allow_vlm_api,
-            cached_vlm_content=cached_vlm_content,
-            primary_result=primary_result,
-            registry=registry,
+            **resolve_kwargs,
         )
 
         if (
@@ -362,27 +408,35 @@ class PipelineService:
                 file_reports=[],
             )
 
-        contents, file_hashes, extraction, file_reports = self._extract_contents(
-            files, options
-        )
-        embeddings = self._vectorize(files, file_hashes, contents, options)
-        labels, noise_repaired = cluster_documents(
-            embeddings,
-            config=self.config,
-            repair_noise=options.repair_noise,
-            clustering=self.config.clustering,
-            item_names=[file.name for file in files],
-        )
-        labels, cluster_names, clusters_merged = generate_all_cluster_names(
-            self.client,
-            labels,
-            contents,
-            files,
-            config=self.config,
-            embeddings=embeddings,
-            merge_same_name=options.merge_same_name,
-            llm_model=self.config.models.llm,
-        )
+        with self._request_runtime_scope() as request_runtime:
+            contents, file_hashes, extraction, file_reports = self._extract_contents(
+                files, options
+            )
+            embeddings = self._vectorize(files, file_hashes, contents, options)
+            labels, noise_repaired = cluster_documents(
+                embeddings,
+                config=self.config,
+                repair_noise=options.repair_noise,
+                clustering=self.config.clustering,
+                item_names=[file.name for file in files],
+            )
+            naming_kwargs = {
+                "config": self.config,
+                "embeddings": embeddings,
+                "merge_same_name": options.merge_same_name,
+                "llm_model": self.config.models.llm,
+            }
+            if request_runtime is not None and self._supports_keyword_arg(
+                generate_all_cluster_names, "request_runtime"
+            ):
+                naming_kwargs["request_runtime"] = request_runtime
+            labels, cluster_names, clusters_merged = generate_all_cluster_names(
+                self.client,
+                labels,
+                contents,
+                files,
+                **naming_kwargs,
+            )
 
         return PipelineResult(
             files=files,
@@ -411,9 +465,10 @@ class PipelineService:
                 file_reports=[],
             )
 
-        contents, _file_hashes, extraction, file_reports = self._extract_contents(
-            files, options
-        )
+        with self._request_runtime_scope():
+            contents, _file_hashes, extraction, file_reports = self._extract_contents(
+                files, options
+            )
         return PipelineResult(
             files=files,
             contents=contents,

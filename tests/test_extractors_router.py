@@ -23,6 +23,7 @@ from dite.extractors.router import (
 from dite.extractors.text import TextExtractor
 from dite.extractors.vlm import VLMExtractor
 from dite.i18n import set_locale
+from dite.utils.api_runtime import ChatCompletionResult
 
 
 class _StubExtractor(BaseExtractor):
@@ -98,6 +99,20 @@ class _FakeClient:
                 self.completions = _FakeCompletions(content, calls)
 
         self.chat = _Chat(content, calls)
+
+
+class _Runtime:
+    def __init__(self, results: list[ChatCompletionResult]) -> None:
+        self._results = results
+        self.calls: list[object] = []
+
+    def run_vlm_page_batch(self, requests, *, per_document_limit):
+        self.calls.append((requests, per_document_limit))
+        return self._results
+
+    def run_image_vlm(self, request):
+        self.calls.append(request)
+        return self._results[0]
 
 
 def test_detect_real_type_recognizes_magic_headers(tmp_path: Path) -> None:
@@ -443,7 +458,7 @@ def test_extract_content_prefers_vlm_when_doc_is_long_glyph_noise(
 
     monkeypatch.setattr(
         "dite.extractors.router._extract_pdf_with_vlm_sampling",
-        lambda file_path, client, config: VLMSamplingResult(
+        lambda file_path, client, config, request_runtime=None: VLMSamplingResult(
             result=ExtractionResult(
                 content="这是 VLM 提取出的正常文本。" * 20,
                 success=True,
@@ -480,7 +495,7 @@ def test_resolve_document_extraction_reports_vlm_sampling_metrics(
 
     monkeypatch.setattr(
         "dite.extractors.router._extract_pdf_with_vlm_sampling",
-        lambda file_path, client, config: VLMSamplingResult(
+        lambda file_path, client, config, request_runtime=None: VLMSamplingResult(
             result=ExtractionResult(
                 content="much better vlm content",
                 success=True,
@@ -560,3 +575,101 @@ def test_vlm_extractor_uses_zh_prompt_when_locale_is_zh(tmp_path: Path) -> None:
     assert result.success is True
     prompt = calls[0]["messages"][0]["content"][1]["text"]
     assert "请详细描述这张图片的内容。" in prompt
+
+
+def test_extract_document_uses_request_runtime_for_images(tmp_path: Path) -> None:
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(b"image-bytes")
+
+    runtime = _Runtime(
+        [
+            ChatCompletionResult(
+                content="runtime image summary",
+                error=None,
+                queue_wait_sec=0.01,
+                request_elapsed_sec=0.02,
+            )
+        ]
+    )
+
+    result = extract_document(
+        image_path,
+        client=object(),
+        config=Config(),
+        request_runtime=runtime,
+    )
+
+    assert result.success is True
+    assert result.content == "runtime image summary"
+    assert len(runtime.calls) == 1
+    request = runtime.calls[0]
+    assert request.kwargs["model"] == Config().models.vlm
+    assert request.kwargs["messages"][0]["content"][0]["image_url"]["url"].startswith(
+        "data:image/png;base64,"
+    )
+
+
+def test_resolve_document_extraction_uses_runtime_for_pdf_vlm_sampling(
+    tmp_path: Path, monkeypatch
+) -> None:
+    file_path = tmp_path / "scan.pdf"
+    file_path.write_bytes(b"%PDF-1.7")
+    cfg = Config()
+    cfg.processing.vlm_fallback_threshold = 50
+    cfg.processing.vlm_pages_per_document = 3
+    registry = _Registry()
+    registry.docling = _StubExtractor(
+        "docling",
+        {".pdf"},
+        ExtractionResult(content="short text", success=True, extractor="docling"),
+    )
+
+    class _Image:
+        width = 1000
+        height = 1200
+
+        def resize(self, new_size):
+            resized = _Image()
+            resized.width, resized.height = new_size
+            return resized
+
+        def save(self, buffer, _fmt):
+            buffer.write(b"png")
+
+    monkeypatch.setattr(
+        "pdf2image.convert_from_path",
+        lambda *_args, **_kwargs: [_Image(), _Image()],
+    )
+
+    runtime = _Runtime(
+        [
+            ChatCompletionResult(
+                content="page 1",
+                error=None,
+                queue_wait_sec=0.01,
+                request_elapsed_sec=0.02,
+            ),
+            ChatCompletionResult(
+                content="page 2",
+                error=None,
+                queue_wait_sec=0.01,
+                request_elapsed_sec=0.03,
+            ),
+        ]
+    )
+    set_locale("en")
+
+    resolved = resolve_document_extraction(
+        file_path,
+        client=object(),
+        registry=registry,
+        config=cfg,
+        request_runtime=runtime,
+    )
+
+    assert resolved.selected_source == "vlm_api"
+    assert resolved.vlm_api_page_calls == 2
+    requests, per_document_limit = runtime.calls[0]
+    assert len(requests) == 2
+    assert per_document_limit == 3
+    assert resolved.final_content == "[Page 1]\npage 1\n\n[Page 2]\npage 2"

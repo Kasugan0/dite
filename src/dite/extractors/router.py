@@ -1,8 +1,8 @@
 """提取器路由 - 根据文件类型选择合适的提取器"""
 
 import base64
-import tempfile
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Literal
 
@@ -10,13 +10,17 @@ from openai import OpenAI
 
 from dite.config import Config
 from dite.i18n import get_locale, t
+from dite.utils.api_runtime import (
+    AsyncRequestRuntime,
+    ChatCompletionRequest,
+)
 from dite.utils.logging import get_logger
 
 from .base import BaseExtractor, ExtractionResult
 from .docling import DoclingExtractor
 from .markitdown import MarkItDownExtractor
 from .text import TextExtractor
-from .vlm import VLMExtractor
+from .vlm import VLMExtractor, _build_vlm_prompt
 
 PDFProfileKind = Literal[
     "native_text",
@@ -143,6 +147,75 @@ def _format_vlm_page_content(page_num: int, content: str) -> str:
     return f"[Page {page_num}]\n{content}"
 
 
+def _build_vlm_chat_request(
+    *,
+    model: str,
+    image_url: str,
+    prompt_text: str,
+    timeout: float | None = None,
+) -> ChatCompletionRequest:
+    kwargs = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_url},
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt_text,
+                    },
+                ],
+            }
+        ],
+        "max_tokens": 500,
+    }
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    return ChatCompletionRequest(kwargs=kwargs)
+
+
+def _encode_image_data_url(image, *, mime_type: str = "image/png") -> tuple[str, float]:
+    """Serialize a PIL image to an in-memory data URL."""
+    buffer = BytesIO()
+    image.save(buffer, "PNG")
+    data = base64.b64encode(buffer.getvalue()).decode("utf-8")
+    size_kb = len(buffer.getvalue()) / 1024
+    return f"data:{mime_type};base64,{data}", size_kb
+
+
+def _extract_image_with_vlm_runtime(
+    file_path: Path,
+    *,
+    config: Config,
+    request_runtime: AsyncRequestRuntime,
+) -> ExtractionResult:
+    mime_type = VLMExtractor.MIME_TYPES.get(file_path.suffix.lower(), "image/jpeg")
+    with open(file_path, "rb") as f:
+        image_data = base64.b64encode(f.read()).decode("utf-8")
+    request = _build_vlm_chat_request(
+        model=config.models.vlm,
+        image_url=f"data:{mime_type};base64,{image_data}",
+        prompt_text=_build_vlm_prompt(),
+    )
+    result = request_runtime.run_image_vlm(request)
+    if result.error is not None:
+        return ExtractionResult(
+            content="",
+            success=False,
+            extractor="vlm",
+            error=str(result.error),
+        )
+    return ExtractionResult(
+        content=result.content or "",
+        success=True,
+        extractor="vlm",
+    )
+
+
 def _detect_real_type(file_path: Path) -> str:
     """
     检测文件的真实类型（基于魔数而非扩展名）
@@ -179,6 +252,7 @@ def _extract_pdf_with_vlm_sampling(
     client: OpenAI,
     config: Config,
     max_pages: int = PDF_VLM_SAMPLE_PAGE_LIMIT,
+    request_runtime: AsyncRequestRuntime | None = None,
 ) -> VLMSamplingResult:
     """
     使用 VLM 处理 PDF 多页（用于扫描件回退）
@@ -193,7 +267,6 @@ def _extract_pdf_with_vlm_sampling(
     """
     logger = get_logger()
     try:
-        # 尝试导入 pdf2image
         from pdf2image import convert_from_path
     except ImportError:
         logger.warning(t("warning_pdf2image_missing"))
@@ -209,7 +282,6 @@ def _extract_pdf_with_vlm_sampling(
         )
 
     try:
-        # 渲染 PDF 多页为图片
         images = convert_from_path(
             file_path,
             first_page=1,
@@ -229,9 +301,8 @@ def _extract_pdf_with_vlm_sampling(
                 sample_page_limit=max_pages,
             )
 
-        # 收集所有页面的描述
-        all_contents = []
-        api_page_calls = 0
+        requests: list[ChatCompletionRequest] = []
+        page_numbers: list[int] = []
 
         for page_num, image in enumerate(images, start=1):
             logger.debug(
@@ -244,12 +315,11 @@ def _extract_pdf_with_vlm_sampling(
                 )
             )
 
-            # 限制图片尺寸：长边最大 1920，短边最大 1080
             max_long = 1920
             max_short = 1080
             width, height = image.width, image.height
 
-            if width > height:  # 横向
+            if width > height:
                 if width > max_long or height > max_short:
                     ratio = min(max_long / width, max_short / height)
                     new_size = (int(width * ratio), int(height * ratio))
@@ -263,7 +333,7 @@ def _extract_pdf_with_vlm_sampling(
                             new_height=new_size[1],
                         )
                     )
-            else:  # 纵向
+            else:
                 if height > max_long or width > max_short:
                     ratio = min(max_short / width, max_long / height)
                     new_size = (int(width * ratio), int(height * ratio))
@@ -278,77 +348,70 @@ def _extract_pdf_with_vlm_sampling(
                         )
                     )
 
-            # 保存为临时 PNG 文件
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                image.save(tmp.name, "PNG")
-                temp_path = Path(tmp.name)
-
-            try:
-                # 读取图片并转为 base64
-                with open(temp_path, "rb") as f:
-                    image_data = base64.b64encode(f.read()).decode("utf-8")
-
-                file_size_kb = temp_path.stat().st_size / 1024
-                logger.debug(t("debug_vlm_image_size", size_kb=file_size_kb))
-
-                # 根据页数调整 prompt
-                prompt_text = _build_vlm_fallback_prompt(page_num)
-
-                # 调用 VLM（设置超时）
-                logger.debug(t("debug_vlm_api_call"))
-                api_page_calls += 1
-                response = client.chat.completions.create(
+            image_url, file_size_kb = _encode_image_data_url(image)
+            logger.debug(t("debug_vlm_image_size", size_kb=file_size_kb))
+            prompt_text = _build_vlm_fallback_prompt(page_num)
+            requests.append(
+                _build_vlm_chat_request(
                     model=config.models.vlm,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/png;base64,{image_data}"
-                                    },
-                                },
-                                {
-                                    "type": "text",
-                                    "text": prompt_text,
-                                },
-                            ],
-                        }
-                    ],
-                    max_tokens=500,
-                    timeout=60.0,  # 60 秒超时
+                    image_url=image_url,
+                    prompt_text=prompt_text,
+                    timeout=60.0,
                 )
+            )
+            page_numbers.append(page_num)
 
-                page_content = response.choices[0].message.content or ""
-                if page_content.strip():
-                    all_contents.append(
-                        _format_vlm_page_content(page_num, page_content.strip())
+        all_contents: list[str] = []
+        api_page_calls = len(requests)
+
+        if request_runtime is not None:
+            results = request_runtime.run_vlm_page_batch(
+                requests,
+                per_document_limit=config.processing.vlm_pages_per_document,
+            )
+            for page_num, result in zip(page_numbers, results, strict=False):
+                if result.error is not None:
+                    logger.debug(
+                        "VLM page "
+                        f"{page_num} failed: {result.error} "
+                        f"(wait={result.queue_wait_sec:.3f}s, "
+                        f"request={result.request_elapsed_sec:.3f}s)"
                     )
+                    continue
+                page_content = (result.content or "").strip()
+                if page_content:
+                    all_contents.append(_format_vlm_page_content(page_num, page_content))
+                    logger.debug(
+                        "VLM page "
+                        f"{page_num} done: length={len(page_content)} "
+                        f"(wait={result.queue_wait_sec:.3f}s, "
+                        f"request={result.request_elapsed_sec:.3f}s)"
+                    )
+        else:
+            for page_num, request in zip(page_numbers, requests, strict=False):
+                try:
+                    logger.debug(t("debug_vlm_api_call"))
+                    response = client.chat.completions.create(**request.kwargs)
+                    page_content = (response.choices[0].message.content or "").strip()
+                    if page_content:
+                        all_contents.append(_format_vlm_page_content(page_num, page_content))
+                        logger.debug(
+                            t(
+                                "debug_vlm_page_done",
+                                page=page_num,
+                                length=len(page_content),
+                            )
+                        )
+                except Exception as api_error:
                     logger.debug(
                         t(
-                            "debug_vlm_page_done",
+                            "debug_vlm_page_failed",
                             page=page_num,
-                            length=len(page_content),
+                            error=api_error,
                         )
                     )
 
-            except Exception as api_error:
-                logger.debug(
-                    t(
-                        "debug_vlm_page_failed",
-                        page=page_num,
-                        error=api_error,
-                    )
-                )
-
-            finally:
-                # 清理临时文件
-                temp_path.unlink(missing_ok=True)
-
-        # 合并所有页面内容
         combined_content = "\n\n".join(all_contents)
-
         return VLMSamplingResult(
             result=ExtractionResult(
                 content=combined_content,
@@ -576,6 +639,7 @@ def extract_document(
     *,
     config: Config,
     registry: ExtractorRegistry | None = None,
+    request_runtime: AsyncRequestRuntime | None = None,
 ) -> ExtractionResult:
     """
     提取文档内容（仅文档转换，不含 VLM 回退）
@@ -606,6 +670,13 @@ def extract_document(
             error=t("warning_unsupported_file_format", suffix=file_path.suffix),
         )
 
+    if isinstance(extractor, VLMExtractor) and request_runtime is not None:
+        return _extract_image_with_vlm_runtime(
+            file_path,
+            config=config,
+            request_runtime=request_runtime,
+        )
+
     return extractor.extract(file_path)
 
 
@@ -619,17 +690,23 @@ def resolve_document_extraction(
     cached_vlm_content: str | None = None,
     primary_result: ExtractionResult | None = None,
     registry: ExtractorRegistry | None = None,
+    request_runtime: AsyncRequestRuntime | None = None,
 ) -> ResolvedExtraction:
     """Resolve primary extraction, PDF fallback, and final content selection."""
     logger = get_logger()
 
     resolved_primary = primary_result
     if resolved_primary is None:
+        extract_kwargs = {
+            "config": config,
+            "registry": registry,
+        }
+        if request_runtime is not None:
+            extract_kwargs["request_runtime"] = request_runtime
         resolved_primary = extract_document(
             file_path,
             client,
-            config=config,
-            registry=registry,
+            **extract_kwargs,
         )
         logger.debug(
             t(
@@ -700,7 +777,14 @@ def resolve_document_extraction(
 
         if fallback_needed and vlm_content is None and allow_vlm_api:
             logger.debug(t("debug_extract_vlm_api_call"))
-            sampling = _extract_pdf_with_vlm_sampling(file_path, client, config=config)
+            sampling_kwargs = {"config": config}
+            if request_runtime is not None:
+                sampling_kwargs["request_runtime"] = request_runtime
+            sampling = _extract_pdf_with_vlm_sampling(
+                file_path,
+                client,
+                **sampling_kwargs,
+            )
             vlm_result = sampling.result
             vlm_api_page_calls = sampling.api_page_calls
             logger.debug(
@@ -790,6 +874,7 @@ def extract_with_vlm_fallback(
     client: OpenAI,
     *,
     config: Config,
+    request_runtime: AsyncRequestRuntime | None = None,
 ) -> ExtractionResult:
     """
     使用 VLM 提取 PDF 内容（多页）
@@ -801,7 +886,14 @@ def extract_with_vlm_fallback(
     Returns:
         ExtractionResult
     """
-    return _extract_pdf_with_vlm_sampling(file_path, client, config=config).result
+    sampling_kwargs = {"config": config}
+    if request_runtime is not None:
+        sampling_kwargs["request_runtime"] = request_runtime
+    return _extract_pdf_with_vlm_sampling(
+        file_path,
+        client,
+        **sampling_kwargs,
+    ).result
 
 
 def extract_content(
@@ -812,6 +904,7 @@ def extract_content(
     truncate_limit: int | None = None,
     enable_vlm_fallback: bool = True,
     registry: ExtractorRegistry | None = None,
+    request_runtime: AsyncRequestRuntime | None = None,
 ) -> str:
     """
     提取文件内容，返回截断后的文本
@@ -828,12 +921,17 @@ def extract_content(
     if truncate_limit is None:
         truncate_limit = config.processing.text_truncate_limit
 
+    resolve_kwargs = {
+        "config": config,
+        "enable_vlm_fallback": enable_vlm_fallback,
+        "allow_vlm_api": True,
+        "registry": registry,
+    }
+    if request_runtime is not None:
+        resolve_kwargs["request_runtime"] = request_runtime
     resolved = resolve_document_extraction(
         file_path,
         client,
-        config=config,
-        enable_vlm_fallback=enable_vlm_fallback,
-        allow_vlm_api=True,
-        registry=registry,
+        **resolve_kwargs,
     )
     return resolved.final_content[:truncate_limit]
