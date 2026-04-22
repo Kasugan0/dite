@@ -5,6 +5,14 @@
 api:
   base_url: https://api.example.com/v1
   api_key: your-api-key
+  connect_timeout_sec: 5.0           # HTTP connect timeout
+  read_timeout_sec: 60.0             # HTTP read timeout
+  write_timeout_sec: 60.0            # HTTP write timeout
+  pool_timeout_sec: 5.0              # HTTP pool-acquire timeout
+  max_retries: 2                     # SDK transport retry count
+  max_connections: 32                # Shared HTTP connection pool upper bound
+  max_keepalive_connections: 16      # Shared keep-alive pool upper bound
+  keepalive_expiry_sec: 5.0          # Keep-alive expiry
 
 # Model Configuration (Qwen3 series recommended)
 models:
@@ -31,6 +39,12 @@ processing:
   text_truncate_limit: 4000            # Smart excerpt limit used for downstream processing
   vlm_fallback_threshold: 100          # Final-output usability threshold used by pdf-check smoke checks
   docling_pdf_timeout_sec: 60          # Max seconds per Docling PDF extraction
+  docling_device: auto                 # auto / cpu / cuda / cuda:N / mps
+  extract_workers: 4                   # Max concurrent file extraction workers
+  docling_pdf_workers: 1               # Max concurrent Docling PDF subprocesses
+  cluster_naming_workers: 2            # Max concurrent cluster naming requests
+  vlm_api_workers: 8                   # Max concurrent VLM requests across files/pages
+  vlm_pages_per_document: 4            # Max concurrent VLM page requests within one PDF
 
 # Notes:
 # - pdf-check is a smoke check for final output usability, not a full-document completeness audit.
