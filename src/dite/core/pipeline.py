@@ -156,6 +156,7 @@ class PipelineService:
                 artifacts_path=extractor._artifacts_path,
                 timeout_sec=extractor._pdf_timeout_sec,
                 locale=get_locale(),
+                device=extractor._device,
             )
 
     def _extract_primary_result(
