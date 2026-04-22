@@ -2,13 +2,13 @@
 
 from typing import Any
 
-from openai import APIError, OpenAI
+from openai import APIError, AsyncOpenAI, OpenAI
 
 from dite.config import ChatCompletionProfileConfig
 
 
 def _translate_reasoning_controls(
-    client: OpenAI,
+    client: OpenAI | AsyncOpenAI,
     profile: ChatCompletionProfileConfig,
 ) -> dict[str, Any]:
     """Translate generic reasoning controls into provider-specific request fields."""
@@ -32,7 +32,7 @@ def _translate_reasoning_controls(
 
 def build_chat_completion_kwargs(
     *,
-    client: OpenAI,
+    client: OpenAI | AsyncOpenAI,
     model: str,
     messages: list[dict[str, Any]],
     profile: ChatCompletionProfileConfig | None = None,

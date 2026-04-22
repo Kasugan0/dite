@@ -1,5 +1,6 @@
 """聚类模块"""
 
+import concurrent.futures
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,7 @@ from sklearn.neighbors import KNeighborsClassifier
 
 from dite.config import ClusteringConfig, Config
 from dite.i18n import get_locale, t
+from dite.utils.api_runtime import AsyncRequestRuntime, ChatCompletionRequest
 from dite.utils.llm import (
     build_chat_completion_kwargs,
     format_api_error,
@@ -50,11 +52,47 @@ CLUSTER_NAME_STOPWORDS = {
 }
 
 
+def _prepare_cluster_name_request_inputs(
+    cluster_embeddings: np.ndarray | None,
+    sample_contents: list[str],
+    sample_names: list[str],
+    *,
+    top_k: int,
+) -> tuple[str, list[str], list[str]]:
+    """Select representative samples and build the naming prompt."""
+    if cluster_embeddings is not None and len(cluster_embeddings) > 0:
+        centroid = cluster_embeddings.mean(axis=0)
+        distances = cosine_distances(
+            cluster_embeddings, centroid.reshape(1, -1)
+        ).flatten()
+        top_indices = np.argsort(distances)[:top_k]
+        sample_contents = [
+            sample_contents[i] for i in top_indices if i < len(sample_contents)
+        ]
+        sample_names = [sample_names[i] for i in top_indices if i < len(sample_names)]
+
+    compact_samples = []
+    for content, file_name in zip(sample_contents, sample_names, strict=False):
+        stripped = content.strip()
+        if not stripped:
+            continue
+        compact_samples.append(
+            _compact_sample_for_naming(
+                file_name,
+                stripped[:CLUSTER_NAME_CONTENT_LIMIT],
+            )
+        )
+
+    prompt = _build_cluster_naming_prompt(compact_samples, sample_names, top_k)
+    return prompt, sample_contents, sample_names
+
+
 def _normalize_cluster_name_text(text: str) -> str:
     """Normalize a raw cluster-name candidate into a single readable line."""
     cleaned = re.sub(r"<!--.*?-->", " ", text, flags=re.DOTALL)
-    cleaned = cleaned.strip().strip("\"'`")
+    cleaned = cleaned.strip()
     cleaned = cleaned.lstrip("#*- ").strip()
+    cleaned = cleaned.strip("\"'`")
     cleaned = re.sub(r"\s+", " ", cleaned)
     return cleaned.strip()
 
@@ -127,8 +165,7 @@ def _build_cluster_debug_labels(labels: np.ndarray) -> dict[int, str]:
     """Map internal numeric labels to stable debug-facing tokens."""
     cluster_labels = sorted(label for label in set(labels) if label != -1)
     return {
-        label: _cluster_debug_token(index)
-        for index, label in enumerate(cluster_labels)
+        label: _cluster_debug_token(index) for index, label in enumerate(cluster_labels)
     }
 
 
@@ -146,20 +183,16 @@ def _extract_title_like_line(content: str) -> str:
 
 def _compact_sample_for_naming(file_name: str, content: str) -> str:
     """Build a compact naming summary for one representative sample."""
-    title = _extract_title_like_line(content) or _fallback_name_from_file_name(file_name)
+    title = _extract_title_like_line(content) or _fallback_name_from_file_name(
+        file_name
+    )
     if not title:
         title = Path(file_name).stem
     excerpt = re.sub(r"\s+", " ", content.strip())[:CLUSTER_NAME_EXCERPT_LIMIT]
     if get_locale() == "zh-CN":
-        return (
-            f"文件名: {file_name}\n"
-            f"标题候选: {title}\n"
-            f"内容片段: {excerpt}"
-        )
+        return f"文件名: {file_name}\n标题候选: {title}\n内容片段: {excerpt}"
     return (
-        f"File name: {file_name}\n"
-        f"Title candidate: {title}\n"
-        f"Content excerpt: {excerpt}"
+        f"File name: {file_name}\nTitle candidate: {title}\nContent excerpt: {excerpt}"
     )
 
 
@@ -178,7 +211,9 @@ def _heuristic_cluster_name(sample_contents: list[str], sample_names: list[str])
     return t("cluster_unnamed_label")
 
 
-def _build_cluster_naming_prompt(compact_samples: list[str], sample_names: list[str], top_k: int) -> str:
+def _build_cluster_naming_prompt(
+    compact_samples: list[str], sample_names: list[str], top_k: int
+) -> str:
     """Build a locale-aware prompt for cluster naming."""
     if get_locale() == "zh-CN":
         forbidden_terms = "「聚类」「分类」「类别」「类型」「封面」「扫描」「文档」「资料」「合集」「汇编」"
@@ -319,7 +354,9 @@ def repair_noise_with_knn(
         )
 
     repaired_count = 0
-    for pred, dist, idx in zip(predictions, distances[:, 0], noise_indices, strict=False):
+    for pred, dist, idx in zip(
+        predictions, distances[:, 0], noise_indices, strict=False
+    ):
         item_name = item_names[idx] if item_names is not None else f"#{idx}"
         debug_label = debug_labels.get(int(pred), str(pred))
         if dist <= distance_threshold:
@@ -429,9 +466,7 @@ def cluster_documents(
     unique_labels = set(labels)
     n_clusters = len([lbl for lbl in unique_labels if lbl != -1])
     n_noise = int(np.sum(labels == -1))
-    logger.debug(
-        t("debug_cluster_initial_result", clusters=n_clusters, noise=n_noise)
-    )
+    logger.debug(t("debug_cluster_initial_result", clusters=n_clusters, noise=n_noise))
 
     debug_labels = _build_cluster_debug_labels(labels)
 
@@ -483,39 +518,12 @@ def generate_cluster_name(
     logger = get_logger()
     model = llm_model or config.models.llm
     request_profile = config.request_profiles.cluster_naming
-
-    # 如果有向量，选择最具代表性的文件
-    if cluster_embeddings is not None and len(cluster_embeddings) > 0:
-        # 计算簇中心
-        centroid = cluster_embeddings.mean(axis=0)
-
-        # 计算每个文件到中心的距离
-        distances = cosine_distances(
-            cluster_embeddings, centroid.reshape(1, -1)
-        ).flatten()
-
-        # 选出最近的 K 个
-        top_indices = np.argsort(distances)[:top_k]
-
-        # 只使用最具代表性的文件
-        sample_contents = [
-            sample_contents[i] for i in top_indices if i < len(sample_contents)
-        ]
-        sample_names = [sample_names[i] for i in top_indices if i < len(sample_names)]
-
-    compact_samples = []
-    for content, file_name in zip(sample_contents, sample_names, strict=False):
-        stripped = content.strip()
-        if not stripped:
-            continue
-        compact_samples.append(
-            _compact_sample_for_naming(
-                file_name,
-                stripped[:CLUSTER_NAME_CONTENT_LIMIT],
-            )
-        )
-
-    prompt = _build_cluster_naming_prompt(compact_samples, sample_names, top_k)
+    prompt, sample_contents, sample_names = _prepare_cluster_name_request_inputs(
+        cluster_embeddings,
+        sample_contents,
+        sample_names,
+        top_k=top_k,
+    )
 
     last_error = ""
     for attempt in range(CLUSTER_NAME_MAX_RETRIES):
@@ -542,9 +550,7 @@ def generate_cluster_name(
                     )
                 )
                 fallback = _heuristic_cluster_name(sample_contents, sample_names)
-                logger.debug(
-                    t("debug_cluster_name_empty_fallback", fallback=fallback)
-                )
+                logger.debug(t("debug_cluster_name_empty_fallback", fallback=fallback))
                 return fallback
 
             name = _normalize_cluster_name_text(raw_name.split("\n")[0])
@@ -651,6 +657,7 @@ def generate_all_cluster_names(
     embeddings: np.ndarray | None = None,
     merge_same_name: bool = True,
     llm_model: str | None = None,
+    request_runtime: AsyncRequestRuntime | None = None,
 ) -> tuple[np.ndarray, dict[int, str], int]:
     """
     为所有簇生成名称，并可选合并同名簇
@@ -666,46 +673,149 @@ def generate_all_cluster_names(
     Returns:
         (可能修改后的标签, 标签到名称的映射, 合并的簇数量)
     """
-    unique_labels = set(labels)
-    cluster_names = {}
-    debug_labels = _build_cluster_debug_labels(labels)
+    cluster_labels = sorted(int(label) for label in set(labels) if label != -1)
+    cluster_names: dict[int, str] = {}
+    if not cluster_labels:
+        return labels, cluster_names, 0
 
-    for label in unique_labels:
+    debug_labels = _build_cluster_debug_labels(labels)
+    cluster_indices_by_label = {label: [] for label in cluster_labels}
+    for index, label in enumerate(labels):
         if label == -1:
             continue
+        cluster_indices_by_label[int(label)].append(index)
 
-        # 获取该簇的索引
-        cluster_indices = [i for i, lbl in enumerate(labels) if lbl == label]
+    logger = get_logger()
 
-        # 获取该簇的文件内容和文件名
-        cluster_contents = [contents[i] for i in cluster_indices]
-        cluster_file_names = [files[i].name for i in cluster_indices]
+    if request_runtime is None:
+        _ = client.chat.completions
 
-        # 获取该簇的向量（如果提供）
-        cluster_embeddings = None
-        if embeddings is not None:
-            cluster_embeddings = embeddings[cluster_indices]
+        def name_cluster(label: int) -> tuple[int, str, int]:
+            cluster_indices = cluster_indices_by_label[label]
+            cluster_contents = [contents[i] for i in cluster_indices]
+            cluster_file_names = [files[i].name for i in cluster_indices]
+            cluster_embeddings = None
+            if embeddings is not None:
+                cluster_embeddings = embeddings[cluster_indices]
 
-        name = generate_cluster_name(
-            client,
-            cluster_embeddings,
-            cluster_contents,
-            cluster_file_names,
-            config=config,
-            llm_model=llm_model,
+            name = generate_cluster_name(
+                client,
+                cluster_embeddings,
+                cluster_contents,
+                cluster_file_names,
+                config=config,
+                llm_model=llm_model,
+            )
+            return label, _display_cluster_name(label, name), len(cluster_indices)
+
+        max_workers = max(
+            1,
+            min(config.processing.cluster_naming_workers, len(cluster_labels)),
         )
-        cluster_names[label] = _display_cluster_name(label, name)
-        logger = get_logger()
+        if max_workers == 1:
+            results = [name_cluster(label) for label in cluster_labels]
+        else:
+            results_by_label: dict[int, tuple[str, int]] = {}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_label = {
+                    executor.submit(name_cluster, label): label for label in cluster_labels
+                }
+                for future in concurrent.futures.as_completed(future_to_label):
+                    label, display_name, count = future.result()
+                    results_by_label[label] = (display_name, count)
+            results = [(label, *results_by_label[label]) for label in cluster_labels]
+    else:
+        request_profile = config.request_profiles.cluster_naming
+        requests: list[ChatCompletionRequest] = []
+        request_meta: list[tuple[int, list[str], list[str], int]] = []
+        model = llm_model or config.models.llm
+
+        for label in cluster_labels:
+            cluster_indices = cluster_indices_by_label[label]
+            cluster_contents = [contents[i] for i in cluster_indices]
+            cluster_file_names = [files[i].name for i in cluster_indices]
+            cluster_embeddings = None
+            if embeddings is not None:
+                cluster_embeddings = embeddings[cluster_indices]
+
+            prompt, selected_contents, selected_names = _prepare_cluster_name_request_inputs(
+                cluster_embeddings,
+                cluster_contents,
+                cluster_file_names,
+                top_k=5,
+            )
+            request_meta.append(
+                (label, selected_contents, selected_names, len(cluster_indices))
+            )
+            requests.append(
+                ChatCompletionRequest(
+                    kwargs=build_chat_completion_kwargs(
+                        client=client,
+                        model=model,
+                        messages=[{"role": "user", "content": prompt}],
+                        profile=request_profile,
+                    )
+                )
+            )
+
+        response_results = request_runtime.run_cluster_naming_batch(requests)
+        results = []
+        for (label, selected_contents, selected_names, count), response in zip(
+            request_meta,
+            response_results,
+            strict=False,
+        ):
+            if response.error is not None:
+                fallback = _heuristic_cluster_name(selected_contents, selected_names)
+                logger.debug(
+                    "Cluster naming async request failed for "
+                    f"{debug_labels.get(label, str(label))}: {response.error} "
+                    f"(wait={response.queue_wait_sec:.3f}s, "
+                    f"request={response.request_elapsed_sec:.3f}s, "
+                    f"fallback={fallback})"
+                )
+                results.append((label, _display_cluster_name(label, fallback), count))
+                continue
+
+            raw_name = (response.content or "").strip()
+            if not raw_name:
+                fallback = _heuristic_cluster_name(selected_contents, selected_names)
+                logger.debug(
+                    "Cluster naming async response empty for "
+                    f"{debug_labels.get(label, str(label))} "
+                    f"(wait={response.queue_wait_sec:.3f}s, "
+                    f"request={response.request_elapsed_sec:.3f}s, "
+                    f"fallback={fallback})"
+                )
+                results.append((label, _display_cluster_name(label, fallback), count))
+                continue
+
+            name = _normalize_cluster_name_text(raw_name.split("\n")[0])
+            if _is_invalid_cluster_name(name):
+                fallback = _heuristic_cluster_name(selected_contents, selected_names)
+                logger.debug(
+                    "Cluster naming async response invalid for "
+                    f"{debug_labels.get(label, str(label))} "
+                    f"(wait={response.queue_wait_sec:.3f}s, "
+                    f"request={response.request_elapsed_sec:.3f}s, "
+                    f"fallback={fallback})"
+                )
+                results.append((label, _display_cluster_name(label, fallback), count))
+                continue
+
+            results.append((label, _display_cluster_name(label, name), count))
+
+    for label, display_name, count in results:
+        cluster_names[label] = display_name
         logger.debug(
             t(
                 "debug_cluster_name_result",
                 label=debug_labels.get(label, str(label)),
-                name=cluster_names[label],
-                count=len(cluster_indices),
+                name=display_name,
+                count=count,
             )
         )
 
-    # 合并同名簇
     merged_count = 0
     if merge_same_name:
         labels, cluster_names, merged_count = merge_clusters_by_name(

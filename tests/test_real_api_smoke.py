@@ -320,6 +320,76 @@ def test_real_api_cluster_names_differ_for_distinct_topics() -> None:
     assert finance_name not in {"未命名", "Unnamed"}
 
 
+def test_real_api_generate_all_cluster_names_smoke() -> None:
+    from dite.core.clusterer import generate_all_cluster_names
+
+    client, embed_model, llm_model = _real_api_settings()
+    config = load_config()
+    config.processing.cluster_naming_workers = 2
+
+    texts = [
+        "机器学习课程讲义，内容包括线性回归、梯度下降和交叉验证。",
+        "深度学习笔记，讨论神经网络、反向传播和卷积网络。",
+        "财务报表分析，包含利润表、资产负债表和现金流量表。",
+        "公司估值备忘录，讨论自由现金流、折现现金流和市盈率。",
+        "线性代数讲义，讨论矩阵、向量空间、特征值与奇异值分解。",
+        "数值分析笔记，讨论迭代法、误差估计、插值与数值积分。",
+    ]
+    files = [
+        Path("ml_regression.txt"),
+        Path("ml_deep_learning.md"),
+        Path("finance_statement.txt"),
+        Path("finance_valuation.md"),
+        Path("linear_algebra.txt"),
+        Path("numerical_analysis.md"),
+    ]
+    labels = np.array([10, 10, 20, 20, 30, 30], dtype=int)
+    embeddings = get_embeddings(
+        client=client,
+        texts=texts,
+        config=config,
+        file_names=[path.name for path in files],
+        embedding_model=embed_model,
+    )
+
+    new_labels, cluster_names, merged_count = generate_all_cluster_names(
+        client=client,
+        labels=labels,
+        contents=texts,
+        files=files,
+        config=config,
+        embeddings=embeddings,
+        merge_same_name=False,
+        llm_model=llm_model,
+    )
+
+    assert merged_count == 0
+    assert np.array_equal(new_labels, labels)
+    assert set(cluster_names) == {10, 20, 30}
+    assert all(name.strip() for name in cluster_names.values())
+    assert all("\n" not in name for name in cluster_names.values())
+    assert all(name not in {"未命名", "Unnamed"} for name in cluster_names.values())
+
+
+
+def test_real_api_cluster_name_file_name_only_smoke() -> None:
+    client, _, llm_model = _real_api_settings()
+    config = load_config()
+    name = generate_cluster_name(
+        client=client,
+        cluster_embeddings=None,
+        sample_contents=["   ", "\n\n"],
+        sample_names=["machine-learning-overview.pdf", "supervised-learning-notes.md"],
+        config=config,
+        llm_model=llm_model,
+    )
+
+    assert isinstance(name, str)
+    assert name.strip() != ""
+    assert "\n" not in name
+    assert name not in {"未命名", "Unnamed"}
+
+
 def test_real_api_pipeline_end_to_end_supports_markdown(tmp_path: Path) -> None:
     client, _, _ = _real_api_settings()
     written = _write_topic_docs(tmp_path)
