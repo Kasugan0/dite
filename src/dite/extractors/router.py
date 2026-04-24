@@ -2,59 +2,38 @@
 
 import base64
 from dataclasses import dataclass
-from io import BytesIO
 from pathlib import Path
 from typing import Literal
 
 from openai import OpenAI
 
 from dite.config import Config
-from dite.i18n import get_locale, t
-from dite.utils.api_runtime import (
-    AsyncRequestRuntime,
-    ChatCompletionRequest,
-)
+from dite.i18n import t
+from dite.utils.api_runtime import AsyncRequestRuntime, ChatCompletionRequest
 from dite.utils.logging import get_logger
 
 from .base import BaseExtractor, ExtractionResult
 from .docling import DoclingExtractor
 from .markitdown import MarkItDownExtractor
+from .pdf_policy import (
+    PDF_VLM_SAMPLE_PAGE_LIMIT,
+    PDFDecision,
+    PDFProfile,
+    PDFProfileKind,
+    build_pdf_decision,
+    classify_pdf_profile,
+    compute_effective_content_length,
+    content_quality_score,
+    count_pdf_glyph_noise_tokens,
+    needs_vlm_fallback,
+    should_prefer_vlm_content,
+)
+from .pdf_vlm import VLMSamplingResult, extract_pdf_with_vlm_sampling
 from .text import TextExtractor
 from .vlm import VLMExtractor, _build_vlm_prompt
 
-PDFProfileKind = Literal[
-    "native_text",
-    "weak_text",
-    "scanned_image",
-    "mixed_pdf",
-    "parser_timeout_or_broken",
-]
 ResolvedSource = Literal["primary", "vlm_cache", "vlm_api"]
 VLMSource = Literal["none", "cache", "api"]
-
-PDF_VLM_SAMPLE_PAGE_LIMIT = 10
-
-
-@dataclass(frozen=True)
-class PDFProfile:
-    """PDF extraction profile used to pick and explain the processing path."""
-
-    kind: PDFProfileKind
-    effective_length: int
-    glyph_noise_tokens: int
-    glyph_noise_ratio: float
-    needs_vlm_fallback: bool
-    success: bool
-    reason: str
-
-
-@dataclass(frozen=True)
-class VLMSamplingResult:
-    """VLM PDF sampling result plus runtime-only metrics."""
-
-    result: ExtractionResult
-    api_page_calls: int
-    sample_page_limit: int
 
 
 @dataclass(frozen=True)
@@ -73,6 +52,29 @@ class ResolvedExtraction:
     vlm_api_success: bool
     vlm_api_page_calls: int
     sample_page_limit: int | None
+
+
+_compute_effective_content_length = compute_effective_content_length
+_count_pdf_glyph_noise_tokens = count_pdf_glyph_noise_tokens
+_content_quality_score = content_quality_score
+_should_prefer_vlm_content = should_prefer_vlm_content
+_extract_pdf_with_vlm_sampling = extract_pdf_with_vlm_sampling
+
+__all__ = [
+    "PDFProfileKind",
+    "PDFProfile",
+    "PDF_VLM_SAMPLE_PAGE_LIMIT",
+    "VLMSamplingResult",
+    "ResolvedExtraction",
+    "ExtractorRegistry",
+    "get_extractor",
+    "classify_pdf_profile",
+    "needs_vlm_fallback",
+    "extract_document",
+    "resolve_document_extraction",
+    "extract_with_vlm_fallback",
+    "extract_content",
+]
 
 
 class ExtractorRegistry:
@@ -110,43 +112,6 @@ class ExtractorRegistry:
         return self._vlm
 
 
-def _build_vlm_fallback_prompt(page_num: int) -> str:
-    """Build a locale-aware fallback prompt for scanned PDF pages."""
-    if get_locale() == "zh-CN":
-        if page_num == 1:
-            return (
-                "这是一份扫描文档的第一页。请详细描述这份文档的内容，"
-                "包括：文档类型、标题、核心主题、关键信息。"
-                "如果有表格或图表，请描述其内容。"
-                "直接输出描述，不要啰嗦。"
-            )
-        return (
-            f"这是文档的第 {page_num} 页。请描述此页的主要内容，"
-            "包括重要段落、公式、图表等信息。"
-            "直接输出描述，不要啰嗦。"
-        )
-
-    if page_num == 1:
-        return (
-            "This is the first page of a scanned document. "
-            "Describe the document in detail, including its type, title, core topic, "
-            "and key information. If there are tables or charts, describe them too. "
-            "Return only the description."
-        )
-    return (
-        f"This is page {page_num} of the document. "
-        "Describe the main content of this page, including important paragraphs, "
-        "formulas, charts, and other key information. Return only the description."
-    )
-
-
-def _format_vlm_page_content(page_num: int, content: str) -> str:
-    """Format page content markers in the active locale."""
-    if get_locale() == "zh-CN":
-        return f"【第{page_num}页】\n{content}"
-    return f"[Page {page_num}]\n{content}"
-
-
 def _build_vlm_chat_request(
     *,
     model: str,
@@ -176,15 +141,6 @@ def _build_vlm_chat_request(
     if timeout is not None:
         kwargs["timeout"] = timeout
     return ChatCompletionRequest(kwargs=kwargs)
-
-
-def _encode_image_data_url(image, *, mime_type: str = "image/png") -> tuple[str, float]:
-    """Serialize a PIL image to an in-memory data URL."""
-    buffer = BytesIO()
-    image.save(buffer, "PNG")
-    data = base64.b64encode(buffer.getvalue()).decode("utf-8")
-    size_kb = len(buffer.getvalue()) / 1024
-    return f"data:{mime_type};base64,{data}", size_kb
 
 
 def _extract_image_with_vlm_runtime(
@@ -247,198 +203,6 @@ def _detect_real_type(file_path: Path) -> str:
         return "unknown"
 
 
-def _extract_pdf_with_vlm_sampling(
-    file_path: Path,
-    client: OpenAI,
-    config: Config,
-    max_pages: int = PDF_VLM_SAMPLE_PAGE_LIMIT,
-    request_runtime: AsyncRequestRuntime | None = None,
-) -> VLMSamplingResult:
-    """
-    使用 VLM 处理 PDF 多页（用于扫描件回退）
-
-    Args:
-        file_path: PDF 文件路径
-        client: OpenAI 客户端
-        max_pages: 最多提取的页数（默认10页）
-
-    Returns:
-        ExtractionResult
-    """
-    logger = get_logger()
-    try:
-        from pdf2image import convert_from_path
-    except ImportError:
-        logger.warning(t("warning_pdf2image_missing"))
-        return VLMSamplingResult(
-            result=ExtractionResult(
-                content="",
-                success=False,
-                extractor="vlm_fallback",
-                error=t("warning_pdf2image_missing"),
-            ),
-            api_page_calls=0,
-            sample_page_limit=max_pages,
-        )
-
-    try:
-        images = convert_from_path(
-            file_path,
-            first_page=1,
-            last_page=max_pages,
-            dpi=150,
-        )
-
-        if not images:
-            return VLMSamplingResult(
-                result=ExtractionResult(
-                    content="",
-                    success=False,
-                    extractor="vlm_fallback",
-                    error=t("error_pdf_render_failed"),
-                ),
-                api_page_calls=0,
-                sample_page_limit=max_pages,
-            )
-
-        requests: list[ChatCompletionRequest] = []
-        page_numbers: list[int] = []
-
-        for page_num, image in enumerate(images, start=1):
-            logger.debug(
-                t(
-                    "debug_vlm_page_processing",
-                    page=page_num,
-                    total=len(images),
-                    width=image.width,
-                    height=image.height,
-                )
-            )
-
-            max_long = 1920
-            max_short = 1080
-            width, height = image.width, image.height
-
-            if width > height:
-                if width > max_long or height > max_short:
-                    ratio = min(max_long / width, max_short / height)
-                    new_size = (int(width * ratio), int(height * ratio))
-                    image = image.resize(new_size)
-                    logger.debug(
-                        t(
-                            "debug_vlm_page_resized",
-                            old_width=width,
-                            old_height=height,
-                            new_width=new_size[0],
-                            new_height=new_size[1],
-                        )
-                    )
-            else:
-                if height > max_long or width > max_short:
-                    ratio = min(max_short / width, max_long / height)
-                    new_size = (int(width * ratio), int(height * ratio))
-                    image = image.resize(new_size)
-                    logger.debug(
-                        t(
-                            "debug_vlm_page_resized",
-                            old_width=width,
-                            old_height=height,
-                            new_width=new_size[0],
-                            new_height=new_size[1],
-                        )
-                    )
-
-            image_url, file_size_kb = _encode_image_data_url(image)
-            logger.debug(t("debug_vlm_image_size", size_kb=file_size_kb))
-            prompt_text = _build_vlm_fallback_prompt(page_num)
-            requests.append(
-                _build_vlm_chat_request(
-                    model=config.models.vlm,
-                    image_url=image_url,
-                    prompt_text=prompt_text,
-                    timeout=60.0,
-                )
-            )
-            page_numbers.append(page_num)
-
-        all_contents: list[str] = []
-        api_page_calls = len(requests)
-
-        if request_runtime is not None:
-            results = request_runtime.run_vlm_page_batch(
-                requests,
-                per_document_limit=config.processing.vlm_pages_per_document,
-            )
-            for page_num, result in zip(page_numbers, results, strict=False):
-                if result.error is not None:
-                    logger.debug(
-                        "VLM page "
-                        f"{page_num} failed: {result.error} "
-                        f"(wait={result.queue_wait_sec:.3f}s, "
-                        f"request={result.request_elapsed_sec:.3f}s)"
-                    )
-                    continue
-                page_content = (result.content or "").strip()
-                if page_content:
-                    all_contents.append(_format_vlm_page_content(page_num, page_content))
-                    logger.debug(
-                        "VLM page "
-                        f"{page_num} done: length={len(page_content)} "
-                        f"(wait={result.queue_wait_sec:.3f}s, "
-                        f"request={result.request_elapsed_sec:.3f}s)"
-                    )
-        else:
-            for page_num, request in zip(page_numbers, requests, strict=False):
-                try:
-                    logger.debug(t("debug_vlm_api_call"))
-                    response = client.chat.completions.create(**request.kwargs)
-                    page_content = (response.choices[0].message.content or "").strip()
-                    if page_content:
-                        all_contents.append(_format_vlm_page_content(page_num, page_content))
-                        logger.debug(
-                            t(
-                                "debug_vlm_page_done",
-                                page=page_num,
-                                length=len(page_content),
-                            )
-                        )
-                except Exception as api_error:
-                    logger.debug(
-                        t(
-                            "debug_vlm_page_failed",
-                            page=page_num,
-                            error=api_error,
-                        )
-                    )
-
-        combined_content = "\n\n".join(all_contents)
-        return VLMSamplingResult(
-            result=ExtractionResult(
-                content=combined_content,
-                success=True,
-                extractor="vlm_fallback",
-            ),
-            api_page_calls=api_page_calls,
-            sample_page_limit=max_pages,
-        )
-
-    except Exception as e:
-        error_msg = str(e)
-        if len(error_msg) > 100:
-            error_msg = error_msg[:100] + "..."
-        logger.warning(t("warning_vlm_fallback_failed", error=error_msg))
-        return VLMSamplingResult(
-            result=ExtractionResult(
-                content="",
-                success=False,
-                extractor="vlm_fallback",
-                error=error_msg,
-            ),
-            api_page_calls=0,
-            sample_page_limit=max_pages,
-        )
-
-
 def get_extractor(
     file_path: Path,
     client: OpenAI | None = None,
@@ -496,143 +260,6 @@ def get_extractor(
     return None
 
 
-def _compute_effective_content_length(content: str) -> int:
-    """
-    计算有效内容长度（排除标记和无意义内容）
-
-    Args:
-        content: 原始内容
-
-    Returns:
-        有效内容的字符数
-    """
-    import re
-
-    # 移除 HTML 注释标记（如 <!-- image -->）
-    clean = re.sub(r"<!--[^>]*-->", "", content)
-
-    # 移除 PDF 字形编码噪音（如 /G25/G26），这类内容很长但几乎没有语义。
-    clean = re.sub(r"(?:/G[0-9A-F]{2})+", " ", clean)
-
-    # 移除连续的数字行号（如 000, 001, 002...）
-    clean = re.sub(r"\b\d{3}\b\s*\n?", "", clean)
-
-    # 移除多余空白
-    clean = re.sub(r"\s+", " ", clean).strip()
-
-    return len(clean)
-
-
-def _count_pdf_glyph_noise_tokens(content: str) -> int:
-    """统计 PDF 提取结果中的字形编码噪音数量。"""
-    import re
-
-    return len(re.findall(r"/G[0-9A-F]{2}", content))
-
-
-def _content_quality_score(content: str) -> int:
-    """返回提取内容的有效质量分数。"""
-    return _compute_effective_content_length(content)
-
-
-def _should_prefer_vlm_content(doc_content: str, vlm_content: str) -> bool:
-    """统一使用有效内容质量来决定是否采用 VLM 结果。"""
-    return _content_quality_score(vlm_content) > _content_quality_score(doc_content)
-
-
-def classify_pdf_profile(
-    content: str,
-    file_path: Path,
-    *,
-    config: Config,
-    success: bool,
-    error: str | None = None,
-    vlm_fallback_threshold: int | None = None,
-) -> PDFProfile | None:
-    """Classify a PDF by the processing path DITE should use."""
-    if file_path.suffix.lower() != ".pdf":
-        return None
-
-    threshold = vlm_fallback_threshold
-    if threshold is None:
-        threshold = config.processing.vlm_fallback_threshold
-
-    effective_length = _compute_effective_content_length(content)
-    glyph_noise_tokens = _count_pdf_glyph_noise_tokens(content)
-    glyph_noise_ratio = glyph_noise_tokens / max(effective_length, 1)
-
-    if not success:
-        return PDFProfile(
-            kind="parser_timeout_or_broken",
-            effective_length=effective_length,
-            glyph_noise_tokens=glyph_noise_tokens,
-            glyph_noise_ratio=glyph_noise_ratio,
-            needs_vlm_fallback=True,
-            success=False,
-            reason=error or "extractor_failed",
-        )
-
-    needs_fallback = needs_vlm_fallback(
-        content,
-        file_path,
-        config=config,
-        vlm_fallback_threshold=vlm_fallback_threshold,
-    )
-    if effective_length == 0:
-        return PDFProfile(
-            kind="scanned_image",
-            effective_length=effective_length,
-            glyph_noise_tokens=glyph_noise_tokens,
-            glyph_noise_ratio=glyph_noise_ratio,
-            needs_vlm_fallback=True,
-            success=True,
-            reason="no_effective_text",
-        )
-
-    if glyph_noise_tokens and glyph_noise_tokens * 4 >= max(effective_length, 1):
-        return PDFProfile(
-            kind="weak_text",
-            effective_length=effective_length,
-            glyph_noise_tokens=glyph_noise_tokens,
-            glyph_noise_ratio=glyph_noise_ratio,
-            needs_vlm_fallback=True,
-            success=True,
-            reason="glyph_noise_dominates",
-        )
-
-    if effective_length < threshold:
-        return PDFProfile(
-            kind="weak_text",
-            effective_length=effective_length,
-            glyph_noise_tokens=glyph_noise_tokens,
-            glyph_noise_ratio=glyph_noise_ratio,
-            needs_vlm_fallback=needs_fallback,
-            success=True,
-            reason="effective_text_below_threshold",
-        )
-
-    if glyph_noise_tokens:
-        return PDFProfile(
-            kind="mixed_pdf",
-            effective_length=effective_length,
-            glyph_noise_tokens=glyph_noise_tokens,
-            glyph_noise_ratio=glyph_noise_ratio,
-            needs_vlm_fallback=needs_fallback,
-            success=True,
-            reason="text_with_glyph_noise",
-        )
-
-    return PDFProfile(
-        kind="native_text",
-        effective_length=effective_length,
-        glyph_noise_tokens=glyph_noise_tokens,
-        glyph_noise_ratio=glyph_noise_ratio,
-        needs_vlm_fallback=needs_fallback,
-        success=True,
-        reason="usable_text_layer",
-    )
-
-
 def extract_document(
     file_path: Path,
     client: OpenAI | None = None,
@@ -678,6 +305,106 @@ def extract_document(
         )
 
     return extractor.extract(file_path)
+
+
+def _resolve_pdf_vlm_fallback(
+    file_path: Path,
+    client: OpenAI | None,
+    *,
+    config: Config,
+    primary_effective_length: int,
+    decision: PDFDecision,
+    cached_vlm_content: str | None,
+    request_runtime: AsyncRequestRuntime | None = None,
+) -> tuple[str | None, VLMSource, bool, int]:
+    """Resolve PDF-only VLM fallback state without changing the public API."""
+    logger = get_logger()
+    pdf_profile = decision.profile
+    assert pdf_profile is not None
+
+    logger.debug(
+        t(
+            "debug_extract_vlm_check",
+            suffix=file_path.suffix.lower(),
+            effective_length=primary_effective_length,
+            threshold=config.processing.vlm_fallback_threshold,
+            needed=decision.fallback_needed,
+        )
+    )
+    logger.debug(
+        t(
+            "debug_pdf_profile",
+            kind=pdf_profile.kind,
+            reason=pdf_profile.reason,
+            effective_length=pdf_profile.effective_length,
+            glyph_noise_tokens=pdf_profile.glyph_noise_tokens,
+            needs_vlm_fallback=pdf_profile.needs_vlm_fallback,
+        )
+    )
+
+    if decision.fallback_source == "cache":
+        return cached_vlm_content, "cache", False, 0
+
+    if decision.fallback_source != "api":
+        return None, "none", False, 0
+
+    logger.debug(t("debug_extract_vlm_api_call"))
+    sampling_kwargs = {"config": config}
+    if request_runtime is not None:
+        sampling_kwargs["request_runtime"] = request_runtime
+    sampling = _extract_pdf_with_vlm_sampling(
+        file_path,
+        client,
+        **sampling_kwargs,
+    )
+    vlm_result = sampling.result
+    logger.debug(
+        t(
+            "debug_extract_vlm_result",
+            success=vlm_result.success,
+            length=len(vlm_result.content),
+            error=vlm_result.error or "-",
+        )
+    )
+    if not vlm_result.success:
+        return None, "none", False, sampling.api_page_calls
+
+    return vlm_result.content, "api", True, sampling.api_page_calls
+
+
+def _select_pdf_final_content(
+    primary_content: str,
+    primary_effective_length: int,
+    vlm_content: str | None,
+    vlm_source: VLMSource,
+) -> tuple[ResolvedSource, str, int]:
+    """Pick the best PDF content source after primary extraction and fallback."""
+    logger = get_logger()
+    if not vlm_content:
+        return "primary", primary_content, primary_effective_length
+
+    vlm_effective_length = _content_quality_score(vlm_content)
+    if _should_prefer_vlm_content(primary_content, vlm_content):
+        logger.debug(
+            t(
+                "debug_extract_vlm_selected",
+                vlm_length=vlm_effective_length,
+                doc_length=primary_effective_length,
+            )
+        )
+        selected_source: ResolvedSource = (
+            "vlm_cache" if vlm_source == "cache" else "vlm_api"
+        )
+        return selected_source, vlm_content, vlm_effective_length
+
+    logger.debug(
+        t(
+            "debug_extract_vlm_skipped",
+            doc_length=primary_effective_length,
+            vlm_length=vlm_effective_length,
+        )
+    )
+    return "primary", primary_content, primary_effective_length
 
 
 def resolve_document_extraction(
@@ -726,105 +453,59 @@ def resolve_document_extraction(
         error=resolved_primary.error,
     )
     primary_effective_length = _compute_effective_content_length(primary_content)
-    pdf_profile = classify_pdf_profile(
-        primary_content,
+    decision = build_pdf_decision(
         file_path,
         config=config,
-        success=normalized_primary.success,
-        error=normalized_primary.error,
-        vlm_fallback_threshold=config.processing.vlm_fallback_threshold,
+        primary_result=normalized_primary,
+        cached_vlm_content=cached_vlm_content,
+        enable_vlm_fallback=enable_vlm_fallback,
+        allow_vlm_api=allow_vlm_api,
+        has_client=client is not None,
     )
-    fallback_needed = False
-    final_content = primary_content
-    final_effective_length = primary_effective_length
-    selected_source: ResolvedSource = "primary"
+    pdf_profile = decision.profile
     vlm_content = cached_vlm_content
     vlm_source: VLMSource = "cache" if cached_vlm_content is not None else "none"
-    vlm_api_success = False
-    vlm_api_page_calls = 0
-    sample_page_limit = (
-        PDF_VLM_SAMPLE_PAGE_LIMIT if file_path.suffix.lower() == ".pdf" else None
+    if pdf_profile is None:
+        return ResolvedExtraction(
+            primary_result=normalized_primary,
+            primary_effective_length=primary_effective_length,
+            pdf_profile=None,
+            fallback_needed=False,
+            selected_source="primary",
+            final_content=primary_content,
+            final_effective_length=primary_effective_length,
+            vlm_content=vlm_content,
+            vlm_source=vlm_source,
+            vlm_api_success=False,
+            vlm_api_page_calls=0,
+            sample_page_limit=None,
+        )
+
+    vlm_content, vlm_source, vlm_api_success, vlm_api_page_calls = (
+        _resolve_pdf_vlm_fallback(
+            file_path,
+            client,
+            config=config,
+            primary_effective_length=primary_effective_length,
+            decision=decision,
+            cached_vlm_content=cached_vlm_content,
+            request_runtime=request_runtime,
+        )
     )
-
-    if file_path.suffix.lower() == ".pdf":
-        fallback_needed = (
-            enable_vlm_fallback
-            and client is not None
-            and normalized_primary.extractor == "docling"
-            and pdf_profile is not None
-            and pdf_profile.needs_vlm_fallback
+    selected_source, final_content, final_effective_length = (
+        _select_pdf_final_content(
+            primary_content,
+            primary_effective_length,
+            vlm_content,
+            vlm_source,
         )
-        logger.debug(
-            t(
-                "debug_extract_vlm_check",
-                suffix=file_path.suffix.lower(),
-                effective_length=primary_effective_length,
-                threshold=config.processing.vlm_fallback_threshold,
-                needed=fallback_needed,
-            )
-        )
-        if pdf_profile is not None:
-            logger.debug(
-                t(
-                    "debug_pdf_profile",
-                    kind=pdf_profile.kind,
-                    reason=pdf_profile.reason,
-                    effective_length=pdf_profile.effective_length,
-                    glyph_noise_tokens=pdf_profile.glyph_noise_tokens,
-                    needs_vlm_fallback=pdf_profile.needs_vlm_fallback,
-                )
-            )
-
-        if fallback_needed and vlm_content is None and allow_vlm_api:
-            logger.debug(t("debug_extract_vlm_api_call"))
-            sampling_kwargs = {"config": config}
-            if request_runtime is not None:
-                sampling_kwargs["request_runtime"] = request_runtime
-            sampling = _extract_pdf_with_vlm_sampling(
-                file_path,
-                client,
-                **sampling_kwargs,
-            )
-            vlm_result = sampling.result
-            vlm_api_page_calls = sampling.api_page_calls
-            logger.debug(
-                t(
-                    "debug_extract_vlm_result",
-                    success=vlm_result.success,
-                    length=len(vlm_result.content),
-                    error=vlm_result.error or "-",
-                )
-            )
-            if vlm_result.success:
-                vlm_content = vlm_result.content
-                vlm_source = "api"
-                vlm_api_success = True
-
-        if vlm_content and _should_prefer_vlm_content(primary_content, vlm_content):
-            final_content = vlm_content
-            final_effective_length = _content_quality_score(vlm_content)
-            selected_source = "vlm_cache" if vlm_source == "cache" else "vlm_api"
-            logger.debug(
-                t(
-                    "debug_extract_vlm_selected",
-                    vlm_length=final_effective_length,
-                    doc_length=primary_effective_length,
-                )
-            )
-        elif vlm_content:
-            logger.debug(
-                t(
-                    "debug_extract_vlm_skipped",
-                    doc_length=primary_effective_length,
-                    vlm_length=_content_quality_score(vlm_content),
-                )
-            )
+    )
 
     return ResolvedExtraction(
         primary_result=normalized_primary,
         primary_effective_length=primary_effective_length,
         pdf_profile=pdf_profile,
-        fallback_needed=fallback_needed,
+        fallback_needed=decision.fallback_needed,
         selected_source=selected_source,
         final_content=final_content,
         final_effective_length=final_effective_length,
@@ -832,41 +513,8 @@ def resolve_document_extraction(
         vlm_source=vlm_source,
         vlm_api_success=vlm_api_success,
         vlm_api_page_calls=vlm_api_page_calls,
-        sample_page_limit=sample_page_limit,
+        sample_page_limit=decision.sample_page_limit,
     )
-
-
-def needs_vlm_fallback(
-    content: str,
-    file_path: Path,
-    *,
-    config: Config,
-    vlm_fallback_threshold: int | None = None,
-) -> bool:
-    """
-    判断是否需要 VLM 回退
-
-    Args:
-        content: docling/markitdown 提取的内容
-        file_path: 文件路径
-
-    Returns:
-        是否需要 VLM 回退
-    """
-    threshold = vlm_fallback_threshold
-    if threshold is None:
-        threshold = config.processing.vlm_fallback_threshold
-
-    # 仅对 PDF 生效
-    if file_path.suffix.lower() != ".pdf":
-        return False
-
-    effective_len = _compute_effective_content_length(content)
-    glyph_noise = _count_pdf_glyph_noise_tokens(content)
-    if glyph_noise and glyph_noise * 4 >= max(effective_len, 1):
-        return True
-
-    return effective_len < threshold
 
 
 def extract_with_vlm_fallback(
