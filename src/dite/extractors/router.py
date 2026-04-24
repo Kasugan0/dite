@@ -3,7 +3,6 @@
 import base64
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from openai import OpenAI
 
@@ -14,6 +13,10 @@ from dite.utils.logging import get_logger
 
 from .base import BaseExtractor, ExtractionResult
 from .docling import DoclingExtractor
+from .pdf_finalize import (
+    ResolvedSource,
+    VLMSource,
+)
 from .markitdown import MarkItDownExtractor
 from .pdf_policy import (
     PDF_VLM_SAMPLE_PAGE_LIMIT,
@@ -31,9 +34,6 @@ from .pdf_policy import (
 from .pdf_vlm import VLMSamplingResult, extract_pdf_with_vlm_sampling
 from .text import TextExtractor
 from .vlm import VLMExtractor, _build_vlm_prompt
-
-ResolvedSource = Literal["primary", "vlm_cache", "vlm_api"]
-VLMSource = Literal["none", "cache", "api"]
 
 
 @dataclass(frozen=True)

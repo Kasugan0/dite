@@ -18,8 +18,8 @@ from dite.extractors import (
 )
 from dite.extractors.base import ExtractionResult
 from dite.extractors.docling import DoclingExtractor, extract_docling_pdf_in_subprocess
+from dite.extractors.pdf_finalize import ResolvedSource
 from dite.extractors.router import (
-    ResolvedSource,
     resolve_document_extraction,
 )
 from dite.i18n import get_locale, t
