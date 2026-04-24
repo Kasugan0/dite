@@ -835,6 +835,76 @@ def test_pipeline_prefers_vlm_when_docling_content_is_glyph_noise(
     cache.close()
 
 
+def test_extract_files_does_not_cache_failed_vlm_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
+    doc = tmp_path / "failed.pdf"
+    doc.write_text("fake-pdf-content", encoding="utf-8")
+
+    cache = FileCache(db_path=tmp_path / "cache.db")
+    config = Config()
+    config.processing.text_truncate_limit = 100
+    service = PipelineService(client=object(), config=config, cache=cache)
+    observed = {"update_calls": 0}
+
+    def fake_extract_docling_pdf_primary_result(
+        self, file_path: Path, extractor, semaphore
+    ) -> ExtractionResult:
+        del self, file_path, extractor, semaphore
+        return ExtractionResult(content="", success=False, extractor="docling")
+
+    def fake_extract_with_vlm_sampling(
+        file_path: Path, client, config=None, max_pages=PDF_VLM_SAMPLE_PAGE_LIMIT
+    ) -> VLMSamplingResult:
+        del file_path, client, config
+        return VLMSamplingResult(
+            result=ExtractionResult(
+                content="",
+                success=False,
+                extractor="vlm_fallback",
+                error="VLM fallback returned no usable content",
+            ),
+            api_page_calls=max_pages,
+            sample_page_limit=max_pages,
+        )
+
+    def fake_update_vlm_content(*args, **kwargs) -> None:
+        del args, kwargs
+        observed["update_calls"] += 1
+
+    monkeypatch.setattr(
+        PipelineService,
+        "_extract_docling_pdf_primary_result",
+        fake_extract_docling_pdf_primary_result,
+    )
+    monkeypatch.setattr(
+        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        fake_extract_with_vlm_sampling,
+    )
+    monkeypatch.setattr(cache, "update_vlm_content", fake_update_vlm_content)
+
+    result = service.extract_files(
+        [doc],
+        PipelineOptions(
+            use_cache=True,
+            use_embedding_cache=False,
+            repair_noise=False,
+            merge_same_name=False,
+        ),
+    )
+
+    assert observed["update_calls"] == 0
+    assert result.contents == [""]
+    assert result.extraction.primary_failures == 1
+    assert result.extraction.source_fallback_needed == 1
+    assert result.extraction.selected_vlm_files == 0
+    assert result.extraction.vlm_api_page_calls == PDF_VLM_SAMPLE_PAGE_LIMIT
+    assert result.file_reports[0].selected_source == "primary"
+    assert result.file_reports[0].vlm_api_page_calls == PDF_VLM_SAMPLE_PAGE_LIMIT
+    assert result.file_reports[0].sample_page_limit == PDF_VLM_SAMPLE_PAGE_LIMIT
+    cache.close()
+
+
 def test_pipeline_real_scan_extract_and_cache_hits(tmp_path: Path, monkeypatch) -> None:
     a = tmp_path / "a.txt"
     b = tmp_path / "b.txt"

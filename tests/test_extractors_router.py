@@ -520,6 +520,85 @@ def test_resolve_document_extraction_reports_vlm_sampling_metrics(
     assert resolved.sample_page_limit == PDF_VLM_SAMPLE_PAGE_LIMIT
 
 
+def test_resolve_document_extraction_prefers_cached_vlm_without_api_call(
+    tmp_path: Path, monkeypatch
+) -> None:
+    file_path = tmp_path / "cached.pdf"
+    file_path.write_bytes(b"%PDF-1.7")
+    cfg = Config()
+    cfg.processing.vlm_fallback_threshold = 50
+    registry = _Registry()
+    registry.docling = _StubExtractor(
+        "docling",
+        {".pdf"},
+        ExtractionResult(content="short text", success=True, extractor="docling"),
+    )
+
+    def fail_extract(*args, **kwargs):
+        raise AssertionError("VLM API should not be called when cached VLM exists")
+
+    monkeypatch.setattr(
+        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        fail_extract,
+    )
+
+    resolved = resolve_document_extraction(
+        file_path,
+        client=object(),
+        registry=registry,
+        config=cfg,
+        cached_vlm_content="cached vlm output " * 10,
+    )
+
+    assert resolved.fallback_needed is True
+    assert resolved.selected_source == "vlm_cache"
+    assert resolved.vlm_source == "cache"
+    assert resolved.vlm_api_success is False
+    assert resolved.vlm_api_page_calls == 0
+    assert resolved.final_content.startswith("cached vlm output")
+    assert resolved.sample_page_limit == PDF_VLM_SAMPLE_PAGE_LIMIT
+
+
+def test_resolve_document_extraction_keeps_fallback_needed_when_api_disabled(
+    tmp_path: Path, monkeypatch
+) -> None:
+    file_path = tmp_path / "no-api.pdf"
+    file_path.write_bytes(b"%PDF-1.7")
+    cfg = Config()
+    cfg.processing.vlm_fallback_threshold = 50
+    registry = _Registry()
+    registry.docling = _StubExtractor(
+        "docling",
+        {".pdf"},
+        ExtractionResult(content="short text", success=True, extractor="docling"),
+    )
+
+    def fail_extract(*args, **kwargs):
+        raise AssertionError("VLM API should stay disabled")
+
+    monkeypatch.setattr(
+        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        fail_extract,
+    )
+
+    resolved = resolve_document_extraction(
+        file_path,
+        client=object(),
+        registry=registry,
+        config=cfg,
+        allow_vlm_api=False,
+    )
+
+    assert resolved.fallback_needed is True
+    assert resolved.selected_source == "primary"
+    assert resolved.vlm_source == "none"
+    assert resolved.vlm_content is None
+    assert resolved.vlm_api_success is False
+    assert resolved.vlm_api_page_calls == 0
+    assert resolved.final_content == "short text"
+    assert resolved.sample_page_limit == PDF_VLM_SAMPLE_PAGE_LIMIT
+
+
 def test_text_extractor_reads_text_and_reports_missing_file(tmp_path: Path) -> None:
     extractor = TextExtractor()
     file_path = tmp_path / "notes.txt"
