@@ -132,6 +132,7 @@ class Messages:
     error_docling_pdf_models_missing: str
     error_docling_pdf_timeout: str
     error_pdf_render_failed: str
+    error_pdf_vlm_no_usable_content: str
     error_text_decode_failed: str
     error_vlm_client_not_initialized: str
 
@@ -377,6 +378,7 @@ ZH_CN = Messages(
     error_docling_pdf_models_missing="Docling PDF 模型未安装。请先运行 `{command}`。",
     error_docling_pdf_timeout="Docling PDF 提取超时: {seconds:g}s",
     error_pdf_render_failed="PDF 渲染失败",
+    error_pdf_vlm_no_usable_content="VLM 回退未返回任何可用内容",
     error_text_decode_failed="无法解码文件，尝试的编码: {encodings}",
     error_vlm_client_not_initialized="VLM 客户端未初始化",
     # Progress
@@ -660,6 +662,7 @@ EN = Messages(
     error_docling_pdf_models_missing="Docling PDF models are not installed. Run `{command}` first.",
     error_docling_pdf_timeout="Docling PDF extraction timed out after {seconds:g}s",
     error_pdf_render_failed="PDF rendering failed",
+    error_pdf_vlm_no_usable_content="VLM fallback returned no usable content",
     error_text_decode_failed="Unable to decode file with attempted encodings: {encodings}",
     error_vlm_client_not_initialized="VLM client is not initialized",
     # Progress
