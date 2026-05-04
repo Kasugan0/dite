@@ -7,12 +7,30 @@ from dite.config import Config
 from dite.i18n import t
 from dite.utils.logging import get_logger
 
-EMBEDDING_INPUT_VERSION = "filename-smart-content-v1"
+EMBEDDING_INPUT_VERSION = "filename-smart-content-normalized-v2"
 
 
 def get_embedding_cache_version(embedding_model: str) -> str:
     """Return the cache key for the current embedding input format."""
     return f"{embedding_model}|input={EMBEDDING_INPUT_VERSION}"
+
+
+def normalize_embeddings(embeddings: np.ndarray) -> np.ndarray:
+    """Return L2-normalized embeddings without changing zero vectors."""
+    result = np.asarray(embeddings, dtype=np.float32)
+    if result.size == 0:
+        return result
+    if result.ndim == 1:
+        norm = float(np.linalg.norm(result))
+        if norm == 0.0:
+            return result
+        return result / norm
+
+    norms = np.linalg.norm(result, axis=1, keepdims=True)
+    normalized = result.copy()
+    nonzero = norms[:, 0] > 0
+    normalized[nonzero] = normalized[nonzero] / norms[nonzero]
+    return normalized
 
 
 def _get_file_name(file_names: list[str] | None, index: int) -> str | None:
@@ -90,7 +108,7 @@ def get_embeddings(
     )
 
     embeddings = [item.embedding for item in response.data]
-    result = np.array(embeddings)
+    result = normalize_embeddings(np.array(embeddings))
 
     logger.debug(t("debug_vector_dimension", dimension=result.shape[1]))
     logger.debug(t("debug_vector_api_usage", tokens=response.usage.total_tokens))

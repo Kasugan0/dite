@@ -1,3 +1,5 @@
+import numpy as np
+
 from dite.config import Config
 from dite.core.embedder import (
     ContentTruncator,
@@ -48,11 +50,16 @@ def test_get_embeddings_includes_file_name_for_non_empty_text() -> None:
     assert request_input.startswith("File name: Rust 程序设计.pdf")
     assert "Content:\nThis document explains Rust ownership" in request_input
     assert client.embeddings.calls[0]["model"] == "embed-model"
+    np.testing.assert_allclose(
+        result,
+        np.array([[0.26726124, 0.53452248, 0.80178373]], dtype=np.float32),
+        rtol=1e-6,
+    )
 
 
 def test_get_embedding_cache_version_tracks_input_format() -> None:
     assert get_embedding_cache_version("embed-model") == (
-        "embed-model|input=filename-smart-content-v1"
+        "embed-model|input=filename-smart-content-normalized-v2"
     )
 
 
