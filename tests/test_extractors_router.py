@@ -599,6 +599,91 @@ def test_resolve_document_extraction_keeps_fallback_needed_when_api_disabled(
     assert resolved.sample_page_limit == PDF_VLM_SAMPLE_PAGE_LIMIT
 
 
+def test_resolve_document_extraction_marks_cache_write_for_selected_fresh_vlm(
+    tmp_path: Path, monkeypatch
+) -> None:
+    file_path = tmp_path / "fresh-vlm.pdf"
+    file_path.write_bytes(b"%PDF-1.7")
+    cfg = Config()
+    cfg.processing.vlm_fallback_threshold = 50
+    registry = _Registry()
+    registry.docling = _StubExtractor(
+        "docling",
+        {".pdf"},
+        ExtractionResult(content="short text", success=True, extractor="docling"),
+    )
+
+    monkeypatch.setattr(
+        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        lambda file_path, client, config: VLMSamplingResult(
+            result=ExtractionResult(
+                content="fresh vlm content " * 10,
+                success=True,
+                extractor="vlm_fallback",
+            ),
+            api_page_calls=2,
+            sample_page_limit=PDF_VLM_SAMPLE_PAGE_LIMIT,
+        ),
+    )
+
+    resolved = resolve_document_extraction(
+        file_path,
+        client=object(),
+        registry=registry,
+        config=cfg,
+    )
+
+    assert resolved.selected_source == "vlm_api"
+    assert resolved.cache_write_intent.should_write is True
+    assert resolved.cache_write_intent.content == resolved.vlm_content
+
+
+def test_resolve_document_extraction_skips_cache_write_for_rejected_fresh_vlm(
+    tmp_path: Path, monkeypatch
+) -> None:
+    file_path = tmp_path / "reject-vlm.pdf"
+    file_path.write_bytes(b"%PDF-1.7")
+    cfg = Config()
+    cfg.processing.vlm_fallback_threshold = 50
+    registry = _Registry()
+    primary_content = "usable primary content"
+    registry.docling = _StubExtractor(
+        "docling",
+        {".pdf"},
+        ExtractionResult(
+            content=primary_content,
+            success=True,
+            extractor="docling",
+        ),
+    )
+
+    monkeypatch.setattr(
+        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        lambda file_path, client, config: VLMSamplingResult(
+            result=ExtractionResult(
+                content="tiny",
+                success=True,
+                extractor="vlm_fallback",
+            ),
+            api_page_calls=1,
+            sample_page_limit=PDF_VLM_SAMPLE_PAGE_LIMIT,
+        ),
+    )
+
+    resolved = resolve_document_extraction(
+        file_path,
+        client=object(),
+        registry=registry,
+        config=cfg,
+    )
+
+    assert resolved.selected_source == "primary"
+    assert resolved.vlm_source == "api"
+    assert resolved.vlm_api_success is True
+    assert resolved.cache_write_intent.should_write is False
+    assert resolved.cache_write_intent.content is None
+
+
 def test_text_extractor_reads_text_and_reports_missing_file(tmp_path: Path) -> None:
     extractor = TextExtractor()
     file_path = tmp_path / "notes.txt"

@@ -1,7 +1,7 @@
 """提取器路由 - 根据文件类型选择合适的提取器"""
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from openai import OpenAI
@@ -13,14 +13,18 @@ from dite.utils.logging import get_logger
 
 from .base import BaseExtractor, ExtractionResult
 from .docling import DoclingExtractor
+from .markitdown import MarkItDownExtractor
 from .pdf_finalize import (
+    PDFCacheWriteIntent,
+    PDFContentSelection,
+    PDFFallbackResolution,
     ResolvedSource,
     VLMSource,
+    resolve_pdf_vlm_fallback,
+    select_pdf_final_content,
 )
-from .markitdown import MarkItDownExtractor
 from .pdf_policy import (
     PDF_VLM_SAMPLE_PAGE_LIMIT,
-    PDFDecision,
     PDFProfile,
     PDFProfileKind,
     build_pdf_decision,
@@ -52,6 +56,12 @@ class ResolvedExtraction:
     vlm_api_success: bool
     vlm_api_page_calls: int
     sample_page_limit: int | None
+    cache_write_intent: PDFCacheWriteIntent = field(
+        default_factory=lambda: PDFCacheWriteIntent(
+            should_write=False,
+            content=None,
+        )
+    )
 
 
 _compute_effective_content_length = compute_effective_content_length
@@ -307,106 +317,6 @@ def extract_document(
     return extractor.extract(file_path)
 
 
-def _resolve_pdf_vlm_fallback(
-    file_path: Path,
-    client: OpenAI | None,
-    *,
-    config: Config,
-    primary_effective_length: int,
-    decision: PDFDecision,
-    cached_vlm_content: str | None,
-    request_runtime: AsyncRequestRuntime | None = None,
-) -> tuple[str | None, VLMSource, bool, int]:
-    """Resolve PDF-only VLM fallback state without changing the public API."""
-    logger = get_logger()
-    pdf_profile = decision.profile
-    assert pdf_profile is not None
-
-    logger.debug(
-        t(
-            "debug_extract_vlm_check",
-            suffix=file_path.suffix.lower(),
-            effective_length=primary_effective_length,
-            threshold=config.processing.vlm_fallback_threshold,
-            needed=decision.fallback_needed,
-        )
-    )
-    logger.debug(
-        t(
-            "debug_pdf_profile",
-            kind=pdf_profile.kind,
-            reason=pdf_profile.reason,
-            effective_length=pdf_profile.effective_length,
-            glyph_noise_tokens=pdf_profile.glyph_noise_tokens,
-            needs_vlm_fallback=pdf_profile.needs_vlm_fallback,
-        )
-    )
-
-    if decision.fallback_source == "cache":
-        return cached_vlm_content, "cache", False, 0
-
-    if decision.fallback_source != "api":
-        return None, "none", False, 0
-
-    logger.debug(t("debug_extract_vlm_api_call"))
-    sampling_kwargs = {"config": config}
-    if request_runtime is not None:
-        sampling_kwargs["request_runtime"] = request_runtime
-    sampling = _extract_pdf_with_vlm_sampling(
-        file_path,
-        client,
-        **sampling_kwargs,
-    )
-    vlm_result = sampling.result
-    logger.debug(
-        t(
-            "debug_extract_vlm_result",
-            success=vlm_result.success,
-            length=len(vlm_result.content),
-            error=vlm_result.error or "-",
-        )
-    )
-    if not vlm_result.success:
-        return None, "none", False, sampling.api_page_calls
-
-    return vlm_result.content, "api", True, sampling.api_page_calls
-
-
-def _select_pdf_final_content(
-    primary_content: str,
-    primary_effective_length: int,
-    vlm_content: str | None,
-    vlm_source: VLMSource,
-) -> tuple[ResolvedSource, str, int]:
-    """Pick the best PDF content source after primary extraction and fallback."""
-    logger = get_logger()
-    if not vlm_content:
-        return "primary", primary_content, primary_effective_length
-
-    vlm_effective_length = _content_quality_score(vlm_content)
-    if _should_prefer_vlm_content(primary_content, vlm_content):
-        logger.debug(
-            t(
-                "debug_extract_vlm_selected",
-                vlm_length=vlm_effective_length,
-                doc_length=primary_effective_length,
-            )
-        )
-        selected_source: ResolvedSource = (
-            "vlm_cache" if vlm_source == "cache" else "vlm_api"
-        )
-        return selected_source, vlm_content, vlm_effective_length
-
-    logger.debug(
-        t(
-            "debug_extract_vlm_skipped",
-            doc_length=primary_effective_length,
-            vlm_length=vlm_effective_length,
-        )
-    )
-    return "primary", primary_content, primary_effective_length
-
-
 def resolve_document_extraction(
     file_path: Path,
     client: OpenAI | None = None,
@@ -481,24 +391,25 @@ def resolve_document_extraction(
             sample_page_limit=None,
         )
 
-    vlm_content, vlm_source, vlm_api_success, vlm_api_page_calls = (
-        _resolve_pdf_vlm_fallback(
-            file_path,
-            client,
-            config=config,
-            primary_effective_length=primary_effective_length,
-            decision=decision,
-            cached_vlm_content=cached_vlm_content,
-            request_runtime=request_runtime,
-        )
+    fallback_resolution: PDFFallbackResolution = resolve_pdf_vlm_fallback(
+        file_path,
+        client,
+        config=config,
+        primary_effective_length=primary_effective_length,
+        decision=decision,
+        cached_vlm_content=cached_vlm_content,
+        sample_with_vlm=_extract_pdf_with_vlm_sampling,
+        request_runtime=request_runtime,
     )
-    selected_source, final_content, final_effective_length = (
-        _select_pdf_final_content(
-            primary_content,
-            primary_effective_length,
-            vlm_content,
-            vlm_source,
-        )
+    vlm_content = fallback_resolution.vlm_content
+    vlm_source = fallback_resolution.vlm_source
+    vlm_api_success = fallback_resolution.vlm_api_success
+    vlm_api_page_calls = fallback_resolution.vlm_api_page_calls
+    selection: PDFContentSelection = select_pdf_final_content(
+        primary_content,
+        primary_effective_length,
+        vlm_content,
+        vlm_source,
     )
 
     return ResolvedExtraction(
@@ -506,14 +417,15 @@ def resolve_document_extraction(
         primary_effective_length=primary_effective_length,
         pdf_profile=pdf_profile,
         fallback_needed=decision.fallback_needed,
-        selected_source=selected_source,
-        final_content=final_content,
-        final_effective_length=final_effective_length,
+        selected_source=selection.selected_source,
+        final_content=selection.final_content,
+        final_effective_length=selection.final_effective_length,
         vlm_content=vlm_content,
         vlm_source=vlm_source,
         vlm_api_success=vlm_api_success,
         vlm_api_page_calls=vlm_api_page_calls,
-        sample_page_limit=decision.sample_page_limit,
+        sample_page_limit=fallback_resolution.sample_page_limit,
+        cache_write_intent=selection.cache_write_intent,
     )
 
 
