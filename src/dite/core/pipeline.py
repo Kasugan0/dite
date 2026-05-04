@@ -75,6 +75,8 @@ class ExtractionFileReport:
     vlm_api_page_calls: int
     sample_page_limit: int | None
     file_hash: str
+    source_reason: str | None = None
+    fallback_needed: bool = False
 
 
 @dataclass
@@ -378,6 +380,10 @@ class PipelineService:
                 vlm_api_page_calls=resolved.vlm_api_page_calls,
                 sample_page_limit=resolved.sample_page_limit,
                 file_hash=file_hash,
+                source_reason=resolved.pdf_profile.reason
+                if resolved.pdf_profile
+                else None,
+                fallback_needed=resolved.fallback_needed,
             ),
             summary_delta=ExtractionSummaryDelta(
                 doc_cache_hits=doc_cache_hits,
