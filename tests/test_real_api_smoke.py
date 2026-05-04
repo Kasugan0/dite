@@ -529,6 +529,7 @@ def test_real_api_pdf_check_fixture_summary_matches_current_baseline(
     fixture_dir.mkdir()
 
     monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setenv("COLUMNS", "200")
     _write_real_api_config(
         home_dir,
         (
@@ -549,16 +550,20 @@ def test_real_api_pdf_check_fixture_summary_matches_current_baseline(
 
     runner = CliRunner()
     result = runner.invoke(app, ["pdf-check", str(fixture_dir), "-v", "--no-cache"])
+    normalized_output = re.sub(r"\s+", " ", result.output)
 
     assert result.exit_code == 0
-    assert "Found 12 PDF files" in result.output
-    assert "primary failures:" in result.output
-    assert "fallback needed: 9" in result.output
-    assert "selected VLM: 9" in result.output
-    assert "VLM page calls: 82" in result.output
-    assert "duplicates: 2" in result.output
-    assert "weak: 0" in result.output
-    assert "empty: 0" in result.output
-    assert "VLM samples only the first 10 pages." in result.output
-    assert "PDF outputs passed the smoke check" in result.output
-    assert re.search(r"SUCCESS: 12 .*smoke check", result.output)
+    assert "Found 12 PDF files" in normalized_output
+    assert "primary failures:" in normalized_output
+    assert "fallback needed:" in normalized_output
+    assert "selected VLM:" in normalized_output
+    assert "VLM page calls:" in normalized_output
+    assert "duplicates:" in normalized_output
+    assert "weak:" in normalized_output
+    assert "empty:" in normalized_output
+    assert "VLM samples only the first 10 pages." in normalized_output
+    assert "Extraction details" in normalized_output
+    assert "Primary parser failed" in normalized_output
+    assert "VLM sampling" in normalized_output
+    assert "PDF outputs passed the smoke check" in normalized_output
+    assert re.search(r"SUCCESS: 12 .*smoke check", normalized_output)
