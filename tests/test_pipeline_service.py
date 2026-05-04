@@ -1273,6 +1273,11 @@ def test_extract_files_locks_down_failure_corpus_classification_baseline(
         "parser_timeout_or_broken",
         "weak_text",
     }
+    assert {report.source_reason for report in result.file_reports} == {
+        "parser_timeout_or_broken",
+        "glyph_noise_dominates",
+    }
+    assert all(report.fallback_needed is True for report in result.file_reports)
     assert all(report.selected_source == "vlm_api" for report in result.file_reports)
     assert all(
         report.sample_page_limit == PDF_VLM_SAMPLE_PAGE_LIMIT
