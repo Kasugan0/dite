@@ -45,10 +45,20 @@ class Messages:
     pdf_check_table_file: str
     pdf_check_table_primary_extractor: str
     pdf_check_table_source_profile: str
+    pdf_check_table_reason: str
     pdf_check_table_selected_source: str
     pdf_check_table_effective_length: str
+    pdf_check_table_source_effective_length: str
+    pdf_check_table_final_effective_length: str
+    pdf_check_table_fallback_needed: str
+    pdf_check_table_vlm_page_calls: str
+    pdf_check_table_sample_limit: str
+    pdf_check_table_lengths: str
+    pdf_check_table_fallback_vlm: str
     pdf_check_failed: str
     pdf_check_passed: str
+    label_yes: str
+    label_no: str
 
     # Cache messages
     cache_docling_hit: str
@@ -64,6 +74,15 @@ class Messages:
     extract_profile_scanned_image: str
     extract_profile_mixed_pdf: str
     extract_profile_parser_timeout_or_broken: str
+    pdf_check_reason_cached_vlm_available: str
+    pdf_check_reason_effective_text_below_threshold: str
+    pdf_check_reason_extractor_failed: str
+    pdf_check_reason_glyph_noise_dominates: str
+    pdf_check_reason_no_effective_text: str
+    pdf_check_reason_text_with_glyph_noise: str
+    pdf_check_reason_usable_text_layer: str
+    pdf_check_reason_vlm_api_allowed: str
+    pdf_check_reason_vlm_fallback_unavailable: str
 
     # Clustering results
     cluster_report_title: str
@@ -293,10 +312,20 @@ ZH_CN = Messages(
     pdf_check_table_file="文件",
     pdf_check_table_primary_extractor="主解析器",
     pdf_check_table_source_profile="源内容类型",
+    pdf_check_table_reason="原因",
     pdf_check_table_selected_source="最终来源",
     pdf_check_table_effective_length="有效长度",
+    pdf_check_table_source_effective_length="源有效长度",
+    pdf_check_table_final_effective_length="最终有效长度",
+    pdf_check_table_fallback_needed="需要回退",
+    pdf_check_table_vlm_page_calls="VLM页调用",
+    pdf_check_table_sample_limit="采样上限",
+    pdf_check_table_lengths="源->最终",
+    pdf_check_table_fallback_vlm="回退; VLM页",
     pdf_check_failed="{count} 个 PDF 的最终提取结果低于阈值",
     pdf_check_passed="{count} 个 PDF 的最终提取结果通过快速检查",
+    label_yes="是",
+    label_no="否",
     # Cache messages
     cache_docling_hit="文档缓存: {count}",
     cache_vlm_hit="VLM缓存: {count}",
@@ -314,6 +343,15 @@ ZH_CN = Messages(
     extract_profile_scanned_image="扫描件/无文本层",
     extract_profile_mixed_pdf="正文夹杂噪音字形",
     extract_profile_parser_timeout_or_broken="主解析失败",
+    pdf_check_reason_cached_vlm_available="命中 VLM 缓存",
+    pdf_check_reason_effective_text_below_threshold="有效文本低于阈值",
+    pdf_check_reason_extractor_failed="主解析器失败",
+    pdf_check_reason_glyph_noise_dominates="噪音字形占主导",
+    pdf_check_reason_no_effective_text="没有有效文本",
+    pdf_check_reason_text_with_glyph_noise="文本夹杂噪音字形",
+    pdf_check_reason_usable_text_layer="文本层可用",
+    pdf_check_reason_vlm_api_allowed="允许 VLM 采样",
+    pdf_check_reason_vlm_fallback_unavailable="VLM 回退不可用",
     # Clustering results
     cluster_report_title="=== 聚类分析报告 ===",
     cluster_total_files="总文件数:",
@@ -574,10 +612,20 @@ EN = Messages(
     pdf_check_table_file="File",
     pdf_check_table_primary_extractor="Primary extractor",
     pdf_check_table_source_profile="Source profile",
+    pdf_check_table_reason="Reason",
     pdf_check_table_selected_source="Selected source",
     pdf_check_table_effective_length="Effective length",
+    pdf_check_table_source_effective_length="Source effective length",
+    pdf_check_table_final_effective_length="Final effective length",
+    pdf_check_table_fallback_needed="Fallback needed",
+    pdf_check_table_vlm_page_calls="VLM page calls",
+    pdf_check_table_sample_limit="Sample limit",
+    pdf_check_table_lengths="Source->final",
+    pdf_check_table_fallback_vlm="Fallback; VLM pages",
     pdf_check_failed="{count} final PDF extraction outputs are below threshold",
     pdf_check_passed="{count} PDF outputs passed the smoke check",
+    label_yes="yes",
+    label_no="no",
     # Cache messages
     cache_docling_hit="Doc cache: {count}",
     cache_vlm_hit="VLM cache: {count}",
@@ -595,6 +643,15 @@ EN = Messages(
     extract_profile_scanned_image="Scanned/no text layer",
     extract_profile_mixed_pdf="Text with glyph noise",
     extract_profile_parser_timeout_or_broken="Primary parser failed",
+    pdf_check_reason_cached_vlm_available="VLM cache hit",
+    pdf_check_reason_effective_text_below_threshold="Effective text below threshold",
+    pdf_check_reason_extractor_failed="Primary extractor failed",
+    pdf_check_reason_glyph_noise_dominates="Glyph noise dominates",
+    pdf_check_reason_no_effective_text="No effective text",
+    pdf_check_reason_text_with_glyph_noise="Text contains glyph noise",
+    pdf_check_reason_usable_text_layer="Usable text layer",
+    pdf_check_reason_vlm_api_allowed="VLM sampling allowed",
+    pdf_check_reason_vlm_fallback_unavailable="VLM fallback unavailable",
     # Clustering results
     cluster_report_title="=== Cluster Analysis Report ===",
     cluster_total_files="Total files:",

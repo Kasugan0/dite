@@ -120,6 +120,7 @@ def test_dite_pdf_check_reports_summary_note_and_verbose_details(
 ) -> None:
     runner = CliRunner()
     _write_test_config(tmp_path, monkeypatch)
+    monkeypatch.setenv("COLUMNS", "200")
     setup_logging()
     docs = tmp_path / "docs"
     docs.mkdir()
@@ -161,6 +162,7 @@ def test_dite_pdf_check_reports_summary_note_and_verbose_details(
                         vlm_api_page_calls=6,
                         sample_page_limit=10,
                         file_hash="hash-1",
+                        fallback_needed=True,
                     )
                 ],
             )
@@ -185,9 +187,12 @@ def test_dite_pdf_check_reports_summary_note_and_verbose_details(
     assert "File" in result.output
     assert "docling" in result.output
     assert "Primary" in result.output
-    assert "parser failed" in result.output
+    assert "broken" in result.output
     assert "Selected" in result.output
-    assert "Effective" in result.output
+    assert "Source->final" in result.output
+    assert "Fallback; VLM pages" in result.output
+    assert "0->2500" in result.output
+    assert "yes; 6/10" in result.output
     assert "VLM sampling" in result.output
 
 
@@ -229,6 +234,7 @@ def test_dite_pdf_check_fails_when_final_output_is_below_threshold(
                         vlm_api_page_calls=0,
                         sample_page_limit=10,
                         file_hash="hash-1",
+                        source_reason="effective_text_below_threshold",
                     )
                 ],
             )
@@ -239,6 +245,7 @@ def test_dite_pdf_check_fails_when_final_output_is_below_threshold(
 
     assert result.exit_code == 1
     assert "Weak final PDF outputs" in result.output
+    assert "Effective text below threshold" in result.output
     assert "below threshold" in result.output
 
 
