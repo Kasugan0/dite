@@ -336,16 +336,15 @@ class PipelineService:
             )
 
         if (
-            resolved.vlm_source == "api"
-            and resolved.vlm_api_success
-            and resolved.vlm_content
+            resolved.cache_write_intent.should_write
+            and resolved.cache_write_intent.content
             and options.use_cache
             and self.cache
         ):
             self.cache.update_vlm_content(
                 file,
                 file_hash,
-                resolved.vlm_content,
+                resolved.cache_write_intent.content,
                 VLM_CACHE_VERSION,
                 enforce_size_limit=False,
             )
