@@ -26,6 +26,7 @@ from dite.core.pipeline import (
 from dite.core.scanner import scan_files
 from dite.extractors.base import ExtractionResult
 from dite.extractors.docling import DoclingExtractor
+from dite.extractors.pdf_finalize import PDFCacheWriteIntent
 from dite.extractors.router import (
     PDF_VLM_SAMPLE_PAGE_LIMIT,
     PDFProfile,
@@ -902,6 +903,204 @@ def test_extract_files_does_not_cache_failed_vlm_fallback(
     assert result.file_reports[0].selected_source == "primary"
     assert result.file_reports[0].vlm_api_page_calls == PDF_VLM_SAMPLE_PAGE_LIMIT
     assert result.file_reports[0].sample_page_limit == PDF_VLM_SAMPLE_PAGE_LIMIT
+    cache.close()
+
+
+def test_extract_files_uses_explicit_cache_write_intent_to_skip_vlm_cache_update(
+    tmp_path: Path, monkeypatch
+) -> None:
+    doc = tmp_path / "explicit-intent-skip.pdf"
+    doc.write_text("fake-pdf-content", encoding="utf-8")
+
+    cache = FileCache(db_path=tmp_path / "cache.db")
+    config = Config()
+    service = PipelineService(client=object(), config=config, cache=cache)
+    observed = {"update_calls": 0}
+
+    def fake_extract_primary_result(
+        self, file_path: Path, registry, docling_pdf_semaphore
+    ) -> ExtractionResult:
+        del self, file_path, registry, docling_pdf_semaphore
+        return ExtractionResult(content="primary", success=True, extractor="docling")
+
+    def fake_resolve_document_extraction(
+        file_path: Path,
+        client,
+        *,
+        enable_vlm_fallback=True,
+        allow_vlm_api=True,
+        cached_vlm_content=None,
+        primary_result=None,
+        registry=None,
+        config=None,
+    ) -> ResolvedExtraction:
+        del (
+            file_path,
+            client,
+            enable_vlm_fallback,
+            allow_vlm_api,
+            cached_vlm_content,
+            primary_result,
+            registry,
+            config,
+        )
+        return ResolvedExtraction(
+            primary_result=ExtractionResult(
+                content="primary",
+                success=True,
+                extractor="docling",
+            ),
+            primary_effective_length=7,
+            pdf_profile=PDFProfile(
+                kind="weak_text",
+                effective_length=7,
+                glyph_noise_tokens=0,
+                glyph_noise_ratio=0.0,
+                needs_vlm_fallback=True,
+                success=True,
+                reason="effective_text_below_threshold",
+            ),
+            fallback_needed=True,
+            selected_source="primary",
+            final_content="primary",
+            final_effective_length=7,
+            vlm_content="fresh vlm content",
+            vlm_source="api",
+            vlm_api_success=True,
+            vlm_api_page_calls=2,
+            sample_page_limit=PDF_VLM_SAMPLE_PAGE_LIMIT,
+            cache_write_intent=PDFCacheWriteIntent(
+                should_write=False,
+                content=None,
+            ),
+        )
+
+    def fake_update_vlm_content(*args, **kwargs) -> None:
+        del args, kwargs
+        observed["update_calls"] += 1
+
+    monkeypatch.setattr(
+        PipelineService,
+        "_extract_primary_result",
+        fake_extract_primary_result,
+    )
+    monkeypatch.setattr(
+        "dite.core.pipeline.resolve_document_extraction",
+        fake_resolve_document_extraction,
+    )
+    monkeypatch.setattr(cache, "update_vlm_content", fake_update_vlm_content)
+
+    service.extract_files(
+        [doc],
+        PipelineOptions(
+            use_cache=True,
+            use_embedding_cache=False,
+            repair_noise=False,
+            merge_same_name=False,
+        ),
+    )
+
+    assert observed["update_calls"] == 0
+    cache.close()
+
+
+def test_extract_files_uses_explicit_cache_write_intent_to_update_vlm_cache(
+    tmp_path: Path, monkeypatch
+) -> None:
+    doc = tmp_path / "explicit-intent-write.pdf"
+    doc.write_text("fake-pdf-content", encoding="utf-8")
+
+    cache = FileCache(db_path=tmp_path / "cache.db")
+    config = Config()
+    service = PipelineService(client=object(), config=config, cache=cache)
+    observed: list[str] = []
+
+    def fake_extract_primary_result(
+        self, file_path: Path, registry, docling_pdf_semaphore
+    ) -> ExtractionResult:
+        del self, file_path, registry, docling_pdf_semaphore
+        return ExtractionResult(content="primary", success=True, extractor="docling")
+
+    def fake_resolve_document_extraction(
+        file_path: Path,
+        client,
+        *,
+        enable_vlm_fallback=True,
+        allow_vlm_api=True,
+        cached_vlm_content=None,
+        primary_result=None,
+        registry=None,
+        config=None,
+    ) -> ResolvedExtraction:
+        del (
+            file_path,
+            client,
+            enable_vlm_fallback,
+            allow_vlm_api,
+            cached_vlm_content,
+            primary_result,
+            registry,
+            config,
+        )
+        return ResolvedExtraction(
+            primary_result=ExtractionResult(
+                content="primary",
+                success=True,
+                extractor="docling",
+            ),
+            primary_effective_length=7,
+            pdf_profile=PDFProfile(
+                kind="weak_text",
+                effective_length=7,
+                glyph_noise_tokens=0,
+                glyph_noise_ratio=0.0,
+                needs_vlm_fallback=True,
+                success=True,
+                reason="effective_text_below_threshold",
+            ),
+            fallback_needed=True,
+            selected_source="primary",
+            final_content="primary",
+            final_effective_length=7,
+            vlm_content=None,
+            vlm_source="none",
+            vlm_api_success=False,
+            vlm_api_page_calls=0,
+            sample_page_limit=PDF_VLM_SAMPLE_PAGE_LIMIT,
+            cache_write_intent=PDFCacheWriteIntent(
+                should_write=True,
+                content="explicit fresh vlm content",
+            ),
+        )
+
+    def fake_update_vlm_content(
+        file_path, file_hash, content, vlm_version, *, enforce_size_limit
+    ) -> None:
+        del file_path, file_hash, vlm_version, enforce_size_limit
+        observed.append(content)
+
+    monkeypatch.setattr(
+        PipelineService,
+        "_extract_primary_result",
+        fake_extract_primary_result,
+    )
+    monkeypatch.setattr(
+        "dite.core.pipeline.resolve_document_extraction",
+        fake_resolve_document_extraction,
+    )
+    monkeypatch.setattr(cache, "update_vlm_content", fake_update_vlm_content)
+
+    service.extract_files(
+        [doc],
+        PipelineOptions(
+            use_cache=True,
+            use_embedding_cache=False,
+            repair_noise=False,
+            merge_same_name=False,
+        ),
+    )
+
+    assert observed == ["explicit fresh vlm content"]
     cache.close()
 
 
