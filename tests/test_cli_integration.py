@@ -296,8 +296,7 @@ def test_format_api_error_extracts_provider_fields() -> None:
     formatted = format_api_error(exc)
 
     assert (
-        formatted
-        == "Request processing failed due to an unknown error. "
+        formatted == "Request processing failed due to an unknown error. "
         "(status=500, code=50507, request_id=rid-123)"
     )
 
@@ -412,6 +411,93 @@ def test_scan_cli_disables_same_name_merge_by_default(
 
     assert result.exit_code == 0
     assert captured["merge_same_name"] is False
+
+
+def test_scan_cli_report_keeps_duplicate_aliases_in_same_cluster(
+    tmp_path: Path, monkeypatch
+) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    first = docs / "paper.txt"
+    second = docs / "paper copy.txt"
+    first.write_text("same paper content", encoding="utf-8")
+    second.write_text("same paper content", encoding="utf-8")
+    report_path = tmp_path / "report.json"
+
+    _write_test_config(tmp_path, monkeypatch)
+    runner = CliRunner()
+
+    def fake_run(self, folder: Path, options):
+        del self, folder, options
+        return PipelineResult(
+            files=[first, second],
+            contents=["same paper content", "same paper content"],
+            embeddings=np.array([[0.6, 0.8], [0.6, 0.8]], dtype=np.float32),
+            labels=np.array([0, 0], dtype=int),
+            cluster_names={0: "Duplicate Papers"},
+            noise_repaired=0,
+            clusters_merged=0,
+        )
+
+    monkeypatch.setattr("dite.core.pipeline.PipelineService.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        ["scan", str(docs), "--output", str(report_path)],
+    )
+
+    assert result.exit_code == 0
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["summary"]["total_files"] == 2
+    assert report["summary"]["num_clusters"] == 1
+    assert report["summary"]["num_noise"] == 0
+    assert report["clusters"][0]["name"] == "Duplicate Papers"
+    assert {file["name"] for file in report["clusters"][0]["files"]} == {
+        "paper.txt",
+        "paper copy.txt",
+    }
+
+
+def test_organize_cli_script_moves_duplicate_aliases_to_same_cluster(
+    tmp_path: Path, monkeypatch
+) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    first = docs / "paper.txt"
+    second = docs / "paper copy.txt"
+    first.write_text("same paper content", encoding="utf-8")
+    second.write_text("same paper content", encoding="utf-8")
+    script_path = tmp_path / "organize.sh"
+
+    _write_test_config(tmp_path, monkeypatch)
+    runner = CliRunner()
+
+    def fake_run(self, folder: Path, options):
+        del self, folder
+        assert options.exclude_paths == [(docs / "organized").resolve()]
+        return PipelineResult(
+            files=[first, second],
+            contents=["same paper content", "same paper content"],
+            embeddings=np.array([[0.6, 0.8], [0.6, 0.8]], dtype=np.float32),
+            labels=np.array([0, 0], dtype=int),
+            cluster_names={0: "Duplicate Papers"},
+            noise_repaired=0,
+            clusters_merged=0,
+        )
+
+    monkeypatch.setattr("dite.core.pipeline.PipelineService.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        ["organize", str(docs), "--output-script", str(script_path)],
+    )
+
+    assert result.exit_code == 0
+    script = script_path.read_text(encoding="utf-8")
+    cluster_dir = docs / "organized" / "Duplicate Papers"
+    assert f'mkdir -p "{cluster_dir}"' in script
+    assert f'cp -p "{first}" "{cluster_dir / first.name}"' in script
+    assert f'cp -p "{second}" "{cluster_dir / second.name}"' in script
 
 
 def test_organize_cli_output_script_generates_shell_script(
@@ -991,7 +1077,9 @@ def test_pdf_check_cached_vlm_only_disables_vlm_api_in_real_pipeline_path(
         fake_resolve_document_extraction,
     )
 
-    result = runner.invoke(app, ["pdf-check", str(docs), "--cached-vlm-only", "--no-cache"])
+    result = runner.invoke(
+        app, ["pdf-check", str(docs), "--cached-vlm-only", "--no-cache"]
+    )
 
     assert result.exit_code == 0
     assert observed == {"allow_vlm_api": False}
