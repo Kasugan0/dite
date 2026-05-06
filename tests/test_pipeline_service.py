@@ -14,7 +14,7 @@ from dite.config import (
     Config,
     RequestProfilesConfig,
 )
-from dite.core.clusterer import repair_noise_with_knn
+from dite.core.clusterer import cluster_documents, repair_noise_with_knn
 from dite.core.embedder import get_embedding_cache_version
 from dite.core.pipeline import (
     ExtractionFileReport,
@@ -1793,6 +1793,67 @@ def test_repair_noise_with_knn_returns_unchanged_without_core_cluster() -> None:
     assert np.array_equal(repaired_labels, labels)
 
 
+def test_cluster_documents_repairs_all_noise_with_similarity_fallback(
+    monkeypatch,
+) -> None:
+    from dite.core import clusterer
+
+    class _FakeHDBSCAN:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+
+        def fit_predict(self, embeddings: np.ndarray) -> np.ndarray:
+            del embeddings
+            return np.array([-1, -1, -1, -1], dtype=int)
+
+    monkeypatch.setattr(clusterer.hdbscan, "HDBSCAN", _FakeHDBSCAN)
+
+    config = Config()
+    config.clustering.min_cluster_size = 2
+    labels, repaired_count = cluster_documents(
+        np.array(
+            [
+                [10.0, 0.0],
+                [9.0, 0.1],
+                [0.0, 10.0],
+                [0.1, 9.0],
+            ],
+            dtype=np.float32,
+        ),
+        config=config,
+        repair_noise=True,
+        knn_distance_threshold=0.05,
+    )
+
+    assert repaired_count == 4
+    assert labels.tolist() == [0, 0, 1, 1]
+
+
+def test_cluster_documents_keeps_all_noise_when_repair_disabled(
+    monkeypatch,
+) -> None:
+    from dite.core import clusterer
+
+    class _FakeHDBSCAN:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+
+        def fit_predict(self, embeddings: np.ndarray) -> np.ndarray:
+            del embeddings
+            return np.array([-1, -1], dtype=int)
+
+    monkeypatch.setattr(clusterer.hdbscan, "HDBSCAN", _FakeHDBSCAN)
+
+    config = Config()
+    labels, repaired_count = cluster_documents(
+        np.array([[1.0, 0.0], [0.99, 0.01]], dtype=np.float32),
+        config=config,
+        repair_noise=False,
+    )
+
+    assert repaired_count == 0
+    assert labels.tolist() == [-1, -1]
+
 
 def test_cluster_documents_uses_clustering_config_without_knn_when_disabled(
     monkeypatch,
@@ -1831,7 +1892,7 @@ def test_cluster_documents_uses_clustering_config_without_knn_when_disabled(
     monkeypatch.setattr(clusterer, "repair_noise_with_knn", fail_repair)
 
     config = Config()
-    config.clustering.min_cluster_size = 4
+    config.clustering.min_cluster_size = 2
     config.clustering.min_samples = 2
     config.clustering.cluster_selection_epsilon = 0.5
     config.clustering.cluster_selection_method = "leaf"
@@ -1845,7 +1906,7 @@ def test_cluster_documents_uses_clustering_config_without_knn_when_disabled(
     assert repaired_count == 0
     assert np.array_equal(labels, np.array([0, -1], dtype=int))
     assert captured["init"] == {
-        "min_cluster_size": 4,
+        "min_cluster_size": 2,
         "min_samples": 2,
         "cluster_selection_epsilon": 0.5,
         "metric": "euclidean",
@@ -1906,6 +1967,36 @@ def test_cluster_documents_passes_knn_overrides_to_repair(monkeypatch) -> None:
     assert captured["k"] == 7
     assert captured["distance_threshold"] == 0.3
     assert captured["item_names"] == ["a.txt", "b.txt"]
+
+
+def test_cluster_documents_normalizes_before_hdbscan(monkeypatch) -> None:
+    from dite.core import clusterer
+
+    captured: dict[str, np.ndarray] = {}
+
+    class _FakeHDBSCAN:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+
+        def fit_predict(self, embeddings: np.ndarray) -> np.ndarray:
+            captured["embeddings"] = embeddings.copy()
+            return np.array([0, 0], dtype=int)
+
+    monkeypatch.setattr(clusterer.hdbscan, "HDBSCAN", _FakeHDBSCAN)
+
+    config = Config()
+    labels, repaired_count = cluster_documents(
+        np.array([[3.0, 4.0], [0.0, 2.0]], dtype=np.float32),
+        config=config,
+        repair_noise=False,
+    )
+
+    assert repaired_count == 0
+    assert labels.tolist() == [0, 0]
+    np.testing.assert_allclose(
+        captured["embeddings"],
+        np.array([[0.6, 0.8], [0.0, 1.0]], dtype=np.float32),
+    )
 
 
 def test_scan_files_excludes_target_directory(tmp_path: Path) -> None:

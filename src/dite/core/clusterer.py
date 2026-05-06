@@ -12,6 +12,7 @@ from sklearn.metrics.pairwise import cosine_distances
 from sklearn.neighbors import KNeighborsClassifier
 
 from dite.config import ClusteringConfig, Config
+from dite.core.embedder import normalize_embeddings
 from dite.i18n import get_locale, t
 from dite.utils.api_runtime import AsyncRequestRuntime, ChatCompletionRequest
 from dite.utils.llm import (
@@ -26,6 +27,7 @@ CLUSTER_NAME_EXCERPT_LIMIT = 180
 CLUSTER_NAME_OUTPUT_LIMIT = 24
 CLUSTER_NAME_MAX_RETRIES = 3
 KNN_DYNAMIC_THRESHOLD_MULTIPLIER = 2.0
+ALL_NOISE_DISTANCE_THRESHOLD = 0.20
 NON_MERGEABLE_CLUSTER_NAMES = {"", "未命名", "Unnamed"}
 PLACEHOLDER_CLUSTER_NAMES = {
     "image",
@@ -392,6 +394,55 @@ def repair_noise_with_knn(
     return labels, repaired_count
 
 
+def repair_all_noise_with_similarity(
+    embeddings: np.ndarray,
+    *,
+    min_cluster_size: int,
+    distance_threshold: float | None = None,
+) -> tuple[np.ndarray, int]:
+    """Group an all-noise HDBSCAN result by conservative cosine connectivity."""
+    labels = np.full(embeddings.shape[0], -1, dtype=int)
+    if embeddings.shape[0] < min_cluster_size:
+        return labels, 0
+
+    threshold = (
+        ALL_NOISE_DISTANCE_THRESHOLD
+        if distance_threshold is None
+        else distance_threshold
+    )
+    distances = cosine_distances(embeddings, embeddings)
+    visited: set[int] = set()
+    next_label = 0
+    repaired_count = 0
+
+    for start in range(embeddings.shape[0]):
+        if start in visited:
+            continue
+        component: list[int] = []
+        stack = [start]
+        visited.add(start)
+
+        while stack:
+            current = stack.pop()
+            component.append(current)
+            neighbors = np.where(distances[current] <= threshold)[0]
+            for neighbor in neighbors:
+                neighbor_index = int(neighbor)
+                if neighbor_index in visited:
+                    continue
+                visited.add(neighbor_index)
+                stack.append(neighbor_index)
+
+        if len(component) < min_cluster_size:
+            continue
+        for index in component:
+            labels[index] = next_label
+        repaired_count += len(component)
+        next_label += 1
+
+    return labels, repaired_count
+
+
 def cluster_documents(
     embeddings: np.ndarray,
     *,
@@ -414,8 +465,32 @@ def cluster_documents(
     Returns:
         聚类标签数组和修复的噪音点数量
     """
+    labels, repaired_count, _repaired_mask = cluster_documents_with_repair_mask(
+        embeddings,
+        config=config,
+        repair_noise=repair_noise,
+        knn_k=knn_k,
+        knn_distance_threshold=knn_distance_threshold,
+        clustering=clustering,
+        item_names=item_names,
+    )
+    return labels, repaired_count
+
+
+def cluster_documents_with_repair_mask(
+    embeddings: np.ndarray,
+    *,
+    config: Config,
+    repair_noise: bool = True,
+    knn_k: int | None = None,
+    knn_distance_threshold: float | None = None,
+    clustering: ClusteringConfig | None = None,
+    item_names: list[str] | None = None,
+) -> tuple[np.ndarray, int, np.ndarray]:
+    """Cluster documents and report which input rows were noise-repaired."""
     logger = get_logger()
     clustering_cfg = clustering or config.clustering
+    embeddings = normalize_embeddings(embeddings)
     effective_knn_k = knn_k if knn_k is not None else clustering_cfg.knn_k
     effective_distance_threshold = (
         knn_distance_threshold
@@ -453,6 +528,10 @@ def cluster_documents(
         )
     )
 
+    if embeddings.shape[0] < clustering_cfg.min_cluster_size:
+        labels = np.full(embeddings.shape[0], -1, dtype=int)
+        return labels, 0, np.zeros(labels.shape, dtype=bool)
+
     clusterer = hdbscan.HDBSCAN(
         min_cluster_size=clustering_cfg.min_cluster_size,
         min_samples=clustering_cfg.min_samples,
@@ -480,16 +559,26 @@ def cluster_documents(
 
     # k-NN 噪音修复
     repaired_count = 0
+    repaired_mask = np.zeros(labels.shape, dtype=bool)
     if repair_noise:
-        labels, repaired_count = repair_noise_with_knn(
-            embeddings,
-            labels,
-            k=effective_knn_k,
-            distance_threshold=effective_distance_threshold,
-            item_names=item_names,
-        )
+        before_repair = labels.copy()
+        if n_clusters == 0 and n_noise > 0:
+            labels, repaired_count = repair_all_noise_with_similarity(
+                embeddings,
+                min_cluster_size=clustering_cfg.min_cluster_size,
+                distance_threshold=effective_distance_threshold,
+            )
+        else:
+            labels, repaired_count = repair_noise_with_knn(
+                embeddings,
+                labels,
+                k=effective_knn_k,
+                distance_threshold=effective_distance_threshold,
+                item_names=item_names,
+            )
+        repaired_mask = (before_repair == -1) & (labels != -1)
 
-    return labels, repaired_count
+    return labels, repaired_count, repaired_mask
 
 
 def generate_cluster_name(
