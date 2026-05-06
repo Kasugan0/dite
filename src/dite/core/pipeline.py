@@ -1,6 +1,7 @@
 """Shared document processing pipeline for scan and organize commands."""
 
 import concurrent.futures
+import dataclasses
 import inspect
 import threading
 from contextlib import contextmanager
@@ -27,8 +28,18 @@ from dite.utils.api_runtime import AsyncRequestRuntime
 from dite.utils.hashing import compute_file_hash
 from dite.utils.logging import get_logger
 
-from .clusterer import cluster_documents, generate_all_cluster_names
-from .embedder import ContentTruncator, get_embedding_cache_version, get_embeddings
+from .clusterer import (
+    cluster_documents_with_repair_mask as cluster_documents,
+)
+from .clusterer import (
+    generate_all_cluster_names,
+)
+from .embedder import (
+    ContentTruncator,
+    get_embedding_cache_version,
+    get_embeddings,
+    normalize_embeddings,
+)
 from .scanner import scan_files
 
 
@@ -107,6 +118,7 @@ class ExtractionSummaryDelta:
 class ExtractionWorkItem:
     index: int
     file: Path
+    file_hash: str
 
 
 @dataclass(frozen=True)
@@ -152,7 +164,11 @@ class PipelineService:
     @contextmanager
     def _request_runtime_scope(self):
         runtime: AsyncRequestRuntime | None = None
-        if isinstance(self.client, OpenAI) and self.config.api.base_url and self.config.api.api_key:
+        if (
+            isinstance(self.client, OpenAI)
+            and self.config.api.base_url
+            and self.config.api.api_key
+        ):
             runtime = AsyncRequestRuntime(self.config)
         previous_runtime = self._request_runtime
         if runtime is not None:
@@ -205,7 +221,10 @@ class PipelineService:
             config=self.config,
             registry=registry,
         )
-        if isinstance(extractor, DoclingExtractor) and file_path.suffix.lower() == ".pdf":
+        if (
+            isinstance(extractor, DoclingExtractor)
+            and file_path.suffix.lower() == ".pdf"
+        ):
             return self._extract_docling_pdf_primary_result(
                 file_path,
                 extractor,
@@ -236,9 +255,9 @@ class PipelineService:
         docling_pdf_semaphore: threading.BoundedSemaphore,
     ) -> ExtractionWorkResult:
         file = item.file
+        file_hash = item.file_hash
         registry = self._make_extractor_registry()
         self.logger.debug(t("debug_extract_processing_file", path=file))
-        file_hash = compute_file_hash(file)
         if file_hash:
             self.logger.debug(t("debug_extract_hash", hash=file_hash[:12]))
 
@@ -248,7 +267,9 @@ class PipelineService:
         cached_vlm_content = None
 
         if options.use_cache and self.cache:
-            cached_primary_content, source_file = self.cache.get_content(file, file_hash)
+            cached_primary_content, source_file = self.cache.get_content(
+                file, file_hash
+            )
             if cached_primary_content:
                 extractor = get_extractor(
                     file,
@@ -299,7 +320,9 @@ class PipelineService:
                     "debug_extract_doc_result",
                     extractor=primary_result.extractor,
                     success=primary_result.success,
-                    length=len(primary_result.content if primary_result.success else ""),
+                    length=len(
+                        primary_result.content if primary_result.success else ""
+                    ),
                     error=primary_result.error or "-",
                 )
             )
@@ -372,7 +395,9 @@ class PipelineService:
                 primary_extractor=resolved.primary_result.extractor,
                 primary_success=resolved.primary_result.success,
                 primary_error=resolved.primary_result.error,
-                source_profile=resolved.pdf_profile.kind if resolved.pdf_profile else None,
+                source_profile=resolved.pdf_profile.kind
+                if resolved.pdf_profile
+                else None,
                 source_effective_length=resolved.primary_effective_length,
                 selected_source=resolved.selected_source,
                 final_effective_length=resolved.final_effective_length,
@@ -417,17 +442,37 @@ class PipelineService:
             contents, file_hashes, extraction, file_reports = self._extract_contents(
                 files, options
             )
-            embeddings = self._vectorize(files, file_hashes, contents, options)
-            labels, noise_repaired = cluster_documents(
-                embeddings,
-                config=self.config,
-                repair_noise=options.repair_noise,
-                clustering=self.config.clustering,
-                item_names=[file.name for file in files],
+            canonical_indices = self._canonical_indices(file_hashes)
+            canonical_files = [files[index] for index in canonical_indices]
+            canonical_hashes = [file_hashes[index] for index in canonical_indices]
+            canonical_contents = [contents[index] for index in canonical_indices]
+            canonical_embeddings = self._vectorize(
+                canonical_files,
+                canonical_hashes,
+                canonical_contents,
+                options,
+            )
+            canonical_labels, canonical_repaired_mask = (
+                self._cluster_canonical_documents(
+                    canonical_embeddings,
+                    options,
+                    [file.name for file in canonical_files],
+                )
+            )
+            embeddings = self._expand_by_file_hashes(
+                canonical_indices,
+                canonical_embeddings,
+                file_hashes,
+                len(files),
+            )
+            noise_repaired = self._expand_noise_repaired_count(
+                canonical_indices,
+                canonical_repaired_mask,
+                file_hashes,
             )
             naming_kwargs = {
                 "config": self.config,
-                "embeddings": embeddings,
+                "embeddings": canonical_embeddings,
                 "merge_same_name": options.merge_same_name,
                 "llm_model": self.config.models.llm,
             }
@@ -435,12 +480,20 @@ class PipelineService:
                 generate_all_cluster_names, "request_runtime"
             ):
                 naming_kwargs["request_runtime"] = request_runtime
-            labels, cluster_names, clusters_merged = generate_all_cluster_names(
-                self.client,
-                labels,
-                contents,
-                files,
-                **naming_kwargs,
+            canonical_labels, cluster_names, clusters_merged = (
+                generate_all_cluster_names(
+                    self.client,
+                    canonical_labels,
+                    canonical_contents,
+                    canonical_files,
+                    **naming_kwargs,
+                )
+            )
+            labels = self._expand_by_file_hashes(
+                canonical_indices,
+                canonical_labels,
+                file_hashes,
+                len(files),
             )
 
         return PipelineResult(
@@ -454,6 +507,29 @@ class PipelineService:
             extraction=extraction,
             file_reports=file_reports,
         )
+
+    def _cluster_canonical_documents(
+        self,
+        embeddings: np.ndarray,
+        options: PipelineOptions,
+        item_names: list[str],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        result = cluster_documents(
+            embeddings,
+            config=self.config,
+            repair_noise=options.repair_noise,
+            clustering=self.config.clustering,
+            item_names=item_names,
+        )
+        if len(result) == 2:
+            labels, repaired_count = result
+            repaired_mask = np.zeros(labels.shape, dtype=bool)
+            if repaired_count:
+                repaired_mask = labels != -1
+            return labels, repaired_mask
+
+        labels, _repaired_count, repaired_mask = result
+        return labels, repaired_mask
 
     def extract_files(
         self, files: list[Path], options: PipelineOptions
@@ -495,13 +571,24 @@ class PipelineService:
         work_results: list[ExtractionWorkResult | None] = [None] * len(files)
         summary = ExtractionSummary()
         truncate_limit = self.config.processing.text_truncate_limit
-        extract_workers = max(1, min(self.config.processing.extract_workers, len(files)))
+        file_hashes = [compute_file_hash(file) for file in files]
+        hash_to_indices = self._hash_to_indices(file_hashes)
+        canonical_indices = [indices[0] for indices in hash_to_indices.values()]
+        extract_workers = max(
+            1,
+            min(self.config.processing.extract_workers, len(canonical_indices)),
+        )
         docling_pdf_semaphore = threading.BoundedSemaphore(
             max(1, self.config.processing.docling_pdf_workers)
         )
-        work_items = [ExtractionWorkItem(index=i, file=file) for i, file in enumerate(files)]
+        work_items = [
+            ExtractionWorkItem(index=i, file=files[i], file_hash=file_hashes[i])
+            for i in canonical_indices
+        ]
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=extract_workers) as executor:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=extract_workers
+        ) as executor:
             future_to_index = {
                 executor.submit(
                     self._extract_content_work_item,
@@ -520,17 +607,32 @@ class PipelineService:
                 work_results[result.index] = result
                 self._merge_summary_delta(summary, result.summary_delta)
 
+        for indices in hash_to_indices.values():
+            canonical_index = indices[0]
+            canonical_result = work_results[canonical_index]
+            if canonical_result is None:
+                raise RuntimeError(
+                    "extraction worker did not populate canonical result"
+                )
+            for index in indices[1:]:
+                contents[index] = canonical_result.content
+                file_reports[index] = dataclasses.replace(
+                    canonical_result.report,
+                    file=files[index],
+                )
+                work_results[index] = dataclasses.replace(
+                    canonical_result,
+                    index=index,
+                    report=file_reports[index],
+                )
+
         if options.use_cache and self.cache:
             self.cache.enforce_size_limit()
 
         hash_to_files: dict[str, list[str]] = {}
-        hash_to_indices: dict[str, list[int]] = {}
         for file, file_hash in zip(files, file_hashes, strict=False):
             if file_hash:
                 hash_to_files.setdefault(file_hash, []).append(str(file))
-        for index, file_hash in enumerate(file_hashes):
-            if file_hash:
-                hash_to_indices.setdefault(file_hash, []).append(index)
 
         duplicate_groups = {
             file_hash: file_list
@@ -545,10 +647,10 @@ class PipelineService:
         for _file_hash, indices in hash_to_indices.items():
             actual_hits = sum(
                 work_results[index].summary_delta.doc_cache_hits
-                for index in indices
+                for index in indices[:1]
                 if work_results[index] is not None
             )
-            summary.doc_cache_hits += max(actual_hits, len(indices) - 1)
+            summary.doc_cache_hits += actual_hits + len(indices) - 1
 
         self.logger.debug(
             t(
@@ -574,10 +676,55 @@ class PipelineService:
 
         return (
             [content for content in contents if content is not None],
-            [file_hash for file_hash in file_hashes if file_hash is not None],
+            file_hashes,
             summary,
             [report for report in file_reports if report is not None],
         )
+
+    @staticmethod
+    def _hash_to_indices(file_hashes: list[str]) -> dict[str, list[int]]:
+        hash_to_indices: dict[str, list[int]] = {}
+        for index, file_hash in enumerate(file_hashes):
+            hash_to_indices.setdefault(file_hash, []).append(index)
+        return hash_to_indices
+
+    @classmethod
+    def _canonical_indices(cls, file_hashes: list[str]) -> list[int]:
+        return [indices[0] for indices in cls._hash_to_indices(file_hashes).values()]
+
+    @classmethod
+    def _expand_by_file_hashes(
+        cls,
+        canonical_indices: list[int],
+        canonical_values: np.ndarray,
+        file_hashes: list[str],
+        total_count: int,
+    ) -> np.ndarray:
+        canonical_position_by_hash = {
+            file_hashes[original_index]: canonical_position
+            for canonical_position, original_index in enumerate(canonical_indices)
+        }
+        expanded_indices = np.empty(total_count, dtype=int)
+        for index, file_hash in enumerate(file_hashes):
+            expanded_indices[index] = canonical_position_by_hash[file_hash]
+        return canonical_values[expanded_indices]
+
+    @classmethod
+    def _expand_noise_repaired_count(
+        cls,
+        canonical_indices: list[int],
+        canonical_repaired_mask: np.ndarray,
+        file_hashes: list[str],
+    ) -> int:
+        if not np.any(canonical_repaired_mask):
+            return 0
+        expanded_repaired_mask = cls._expand_by_file_hashes(
+            canonical_indices,
+            canonical_repaired_mask,
+            file_hashes,
+            len(file_hashes),
+        )
+        return int(np.sum(expanded_repaired_mask))
 
     @staticmethod
     def _build_cached_primary_result(
@@ -651,7 +798,9 @@ class PipelineService:
                     )
 
             embeddings_list.sort(key=lambda item: item[0])
-            return np.array([embedding for _, embedding in embeddings_list])
+            return normalize_embeddings(
+                np.array([embedding for _, embedding in embeddings_list])
+            )
 
         file_names = [file.name for file in files]
         return get_embeddings(

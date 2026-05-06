@@ -1169,6 +1169,305 @@ def test_pipeline_real_scan_extract_and_cache_hits(tmp_path: Path, monkeypatch) 
     cache.close()
 
 
+def test_pipeline_deduplicates_same_hash_before_vlm_embedding_and_clustering(
+    tmp_path: Path, monkeypatch
+) -> None:
+    docs = [tmp_path / name for name in ("paper.pdf", "paper (1).pdf", "paper (2).pdf")]
+    for doc in docs:
+        doc.write_bytes(b"%PDF-1.7 duplicate paper")
+
+    service = PipelineService(client=object(), config=Config(), cache=None)
+    calls = {"primary": 0, "resolve": 0, "embedding": 0, "cluster": 0}
+
+    def fake_extract_primary_result(
+        self, file_path: Path, registry, docling_pdf_semaphore
+    ) -> ExtractionResult:
+        del self, registry, docling_pdf_semaphore
+        calls["primary"] += 1
+        return ExtractionResult(
+            content=f"primary content from {file_path.name}",
+            success=True,
+            extractor="docling",
+        )
+
+    def fake_resolve_document_extraction(
+        file_path: Path,
+        client,
+        *,
+        enable_vlm_fallback=True,
+        allow_vlm_api=True,
+        cached_vlm_content=None,
+        primary_result=None,
+        registry=None,
+        config=None,
+    ) -> ResolvedExtraction:
+        del (
+            client,
+            enable_vlm_fallback,
+            allow_vlm_api,
+            cached_vlm_content,
+            registry,
+            config,
+        )
+        calls["resolve"] += 1
+        assert primary_result is not None
+        return ResolvedExtraction(
+            final_content=f"canonical summary for {file_path.name}",
+            selected_source="vlm_api",
+            primary_result=primary_result,
+            primary_effective_length=len(primary_result.content),
+            final_effective_length=120,
+            pdf_profile=PDFProfile(
+                kind="scanned_image",
+                effective_length=0,
+                glyph_noise_tokens=0,
+                glyph_noise_ratio=0.0,
+                needs_vlm_fallback=True,
+                success=True,
+                reason="test",
+            ),
+            fallback_needed=True,
+            vlm_api_page_calls=3,
+            sample_page_limit=PDF_VLM_SAMPLE_PAGE_LIMIT,
+            cache_write_intent=PDFCacheWriteIntent(
+                should_write=True,
+                content="canonical vlm",
+            ),
+            vlm_content="canonical vlm",
+            vlm_source="api",
+            vlm_api_success=True,
+        )
+
+    def fake_get_embeddings(
+        client, texts, *, config=None, file_names=None, embedding_model=None
+    ) -> np.ndarray:
+        del client, config, embedding_model
+        calls["embedding"] += 1
+        assert texts == ["canonical summary for paper (1).pdf"]
+        assert file_names == ["paper (1).pdf"]
+        return np.array([[0.6, 0.8]], dtype=np.float32)
+
+    def fake_cluster_documents(
+        embeddings: np.ndarray,
+        repair_noise: bool,
+        *,
+        config=None,
+        clustering=None,
+        item_names=None,
+    ):
+        calls["cluster"] += 1
+        assert embeddings.shape == (1, 2)
+        assert item_names == ["paper (1).pdf"]
+        return np.array([0]), 0
+
+    def fake_generate_all_cluster_names(
+        client,
+        labels: np.ndarray,
+        contents: list[str],
+        files: list[Path],
+        embeddings: np.ndarray | None = None,
+        merge_same_name: bool = True,
+        llm_model: str | None = None,
+        config: Config | None = None,
+    ):
+        del client, embeddings, merge_same_name, llm_model, config
+        assert labels.tolist() == [0]
+        assert contents == ["canonical summary for paper (1).pdf"]
+        assert files == [docs[1]]
+        return labels, {0: "Duplicate Papers"}, 0
+
+    monkeypatch.setattr(
+        PipelineService,
+        "_extract_primary_result",
+        fake_extract_primary_result,
+    )
+    monkeypatch.setattr(
+        "dite.core.pipeline.resolve_document_extraction",
+        fake_resolve_document_extraction,
+    )
+    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr(
+        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+    )
+
+    result = service.run(
+        tmp_path,
+        PipelineOptions(use_cache=False, use_embedding_cache=False),
+    )
+
+    assert calls == {"primary": 1, "resolve": 1, "embedding": 1, "cluster": 1}
+    assert result.files == sorted(docs)
+    assert result.contents == ["canonical summary for paper (1).pdf"] * 3
+    np.testing.assert_allclose(
+        result.embeddings,
+        np.array([[0.6, 0.8], [0.6, 0.8], [0.6, 0.8]], dtype=np.float32),
+    )
+    assert result.labels.tolist() == [0, 0, 0]
+    assert result.extraction.duplicate_count == 2
+    assert result.extraction.selected_vlm_files == 1
+    assert result.extraction.vlm_api_page_calls == 3
+    assert result.extraction.doc_cache_hits == 2
+    assert [report.file for report in result.file_reports] == sorted(docs)
+    assert len({report.file_hash for report in result.file_reports}) == 1
+
+
+def test_pipeline_reuses_hash_cached_embedding_for_duplicate_canonical(
+    tmp_path: Path, monkeypatch
+) -> None:
+    canonical = tmp_path / "a.txt"
+    cached_alias = tmp_path / "b.txt"
+    content = "same duplicate content long enough for extraction"
+    canonical.write_text(content, encoding="utf-8")
+    cached_alias.write_text(content, encoding="utf-8")
+
+    cache = FileCache(db_path=tmp_path / "cache.db")
+    config = Config()
+    file_hash = compute_file_hash(cached_alias)
+    cached_embedding = np.array([3.0, 4.0], dtype=np.float32)
+    cache.save(
+        file_path=cached_alias,
+        file_hash=file_hash,
+        file_mtime=cached_alias.stat().st_mtime,
+        content_md=content,
+        embedding=cached_embedding,
+        model_version=get_embedding_cache_version(config.models.embedding),
+    )
+    service = PipelineService(client=object(), config=config, cache=cache)
+
+    def fail_get_embeddings(*args, **kwargs) -> np.ndarray:
+        raise AssertionError("embedding API should not run for hash-cached duplicate")
+
+    def fake_cluster_documents(
+        embeddings: np.ndarray,
+        repair_noise: bool,
+        *,
+        config=None,
+        clustering=None,
+        item_names=None,
+    ):
+        del repair_noise, config, clustering
+        np.testing.assert_allclose(
+            embeddings,
+            np.array([[0.6, 0.8]], dtype=np.float32),
+        )
+        assert item_names == ["a.txt"]
+        return np.array([0]), 0
+
+    def fake_generate_all_cluster_names(
+        client,
+        labels: np.ndarray,
+        contents: list[str],
+        files: list[Path],
+        embeddings: np.ndarray | None = None,
+        merge_same_name: bool = True,
+        llm_model: str | None = None,
+        config: Config | None = None,
+    ):
+        del client, embeddings, merge_same_name, llm_model, config
+        assert labels.tolist() == [0]
+        assert contents == [content]
+        assert files == [canonical]
+        return labels, {0: "Cached Duplicate"}, 0
+
+    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fail_get_embeddings)
+    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr(
+        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+    )
+
+    result = service.run(
+        tmp_path,
+        PipelineOptions(
+            use_cache=True,
+            use_embedding_cache=True,
+            repair_noise=True,
+            merge_same_name=False,
+        ),
+    )
+
+    assert result.files == [canonical, cached_alias]
+    assert result.contents == [content, content]
+    np.testing.assert_allclose(
+        result.embeddings,
+        np.array([[0.6, 0.8], [0.6, 0.8]], dtype=np.float32),
+    )
+    assert result.labels.tolist() == [0, 0]
+    assert result.extraction.doc_cache_hits == 2
+    assert result.extraction.duplicate_count == 1
+    cache.close()
+
+
+def test_pipeline_expands_repaired_noise_count_to_duplicate_aliases(
+    tmp_path: Path, monkeypatch
+) -> None:
+    duplicate_a = tmp_path / "a.txt"
+    duplicate_b = tmp_path / "b.txt"
+    noise = tmp_path / "c.txt"
+    duplicate_content = "same duplicate paper content long enough"
+    duplicate_a.write_text(duplicate_content, encoding="utf-8")
+    duplicate_b.write_text(duplicate_content, encoding="utf-8")
+    noise.write_text("unrelated content long enough", encoding="utf-8")
+
+    service = PipelineService(client=object(), config=Config(), cache=None)
+
+    def fake_get_embeddings(
+        client, texts, *, config=None, file_names=None, embedding_model=None
+    ) -> np.ndarray:
+        del client, config, embedding_model
+        assert texts == [duplicate_content, "unrelated content long enough"]
+        assert file_names == ["a.txt", "c.txt"]
+        return np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+
+    def fake_cluster_documents(
+        embeddings: np.ndarray,
+        repair_noise: bool,
+        *,
+        config=None,
+        clustering=None,
+        item_names=None,
+    ):
+        del embeddings, repair_noise, config, clustering
+        assert item_names == ["a.txt", "c.txt"]
+        return (
+            np.array([0, -1], dtype=int),
+            1,
+            np.array([True, False], dtype=bool),
+        )
+
+    def fake_generate_all_cluster_names(
+        client,
+        labels: np.ndarray,
+        contents: list[str],
+        files: list[Path],
+        embeddings: np.ndarray | None = None,
+        merge_same_name: bool = True,
+        llm_model: str | None = None,
+        config: Config | None = None,
+    ):
+        del client, embeddings, merge_same_name, llm_model, config
+        assert labels.tolist() == [0, -1]
+        assert contents == [duplicate_content, "unrelated content long enough"]
+        assert files == [duplicate_a, noise]
+        return labels, {0: "Repaired Duplicate"}, 0
+
+    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr(
+        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+    )
+
+    result = service.run(
+        tmp_path,
+        PipelineOptions(use_cache=False, use_embedding_cache=False, repair_noise=True),
+    )
+
+    assert result.files == [duplicate_a, duplicate_b, noise]
+    assert result.labels.tolist() == [0, 0, -1]
+    assert result.noise_repaired == 2
+    assert result.extraction.duplicate_count == 1
+
+
 def test_extract_files_locks_down_failure_corpus_classification_baseline(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1447,7 +1746,10 @@ def test_pipeline_recomputes_embedding_when_model_changes(
 
     assert len(result.files) == 1
     assert call_count["emb"] == 1
-    np.testing.assert_allclose(result.embeddings, np.array([[0.9, 0.8]]))
+    np.testing.assert_allclose(
+        result.embeddings,
+        np.array([[0.7474093, 0.6643638]], dtype=np.float32),
+    )
     cache.close()
 
 
@@ -1524,7 +1826,10 @@ def test_pipeline_recomputes_embedding_when_input_version_changes(
         "file_names": ["sample.txt"],
         "embedding_model": "embed-v1",
     }
-    np.testing.assert_allclose(result.embeddings, np.array([[0.9, 0.8]]))
+    np.testing.assert_allclose(
+        result.embeddings,
+        np.array([[0.7474093, 0.6643638]], dtype=np.float32),
+    )
     entry = cache.get_by_path(doc)
     assert entry is not None
     assert entry.model_version == get_embedding_cache_version("embed-v1")
