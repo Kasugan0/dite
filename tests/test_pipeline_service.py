@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 import numpy as np
+import pytest
 from openai import APIStatusError
 
 from dite.cache import FileCache
@@ -3855,9 +3856,8 @@ def test_extract_with_vlm_fallback_requires_explicit_config(tmp_path: Path) -> N
     pdf_path = tmp_path / "scan.pdf"
     pdf_path.write_text("fake", encoding="utf-8")
 
-    try:
-        router.extract_with_vlm_fallback(pdf_path, client=object())  # type: ignore[call-arg]
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("extract_with_vlm_fallback should require config")
+    with pytest.raises(TypeError):
+        router.extract_with_vlm_fallback(
+            pdf_path,
+            client=object(),
+        )

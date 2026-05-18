@@ -131,7 +131,10 @@ Requirements: output strict JSON only, with no explanatory text.
 ```json
 {{
   "layout": {{
-    "type": "academic paper|technical report|invoice|contract|handout|presentation|image|other",
+    "type": (
+      "academic paper|technical report|invoice|contract|handout|"
+      "presentation|image|other"
+    ),
     "columns": "single|double|triple|mixed",
     "has_table": boolean,
     "has_logo": boolean,
@@ -146,7 +149,10 @@ Requirements: output strict JSON only, with no explanatory text.
     "domain": "tech|finance|legal|education|medical|other"
   }},
   "summary": "one-sentence summary (max 50 words)",
-  "template_hints": "possible source template or organization (for example: arXiv paper, bank statement)",
+  "template_hints": (
+    "possible source template or organization "
+    "(for example: arXiv paper, bank statement)"
+  ),
   "confidence": 0.0-1.0
 }}
 ```
