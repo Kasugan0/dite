@@ -24,9 +24,13 @@ from dite.extractors.router import (
 )
 
 
+def call_invalid_signature(func, *args, **kwargs):
+    return func(*args, **kwargs)
+
+
 def test_pipeline_service_requires_explicit_config() -> None:
     with pytest.raises(TypeError):
-        PipelineService(client=object())  # type: ignore[call-arg]
+        call_invalid_signature(PipelineService, client=object())
 
 
 def test_core_public_functions_require_explicit_config(tmp_path: Path) -> None:
@@ -36,22 +40,23 @@ def test_core_public_functions_require_explicit_config(tmp_path: Path) -> None:
     embeddings = np.array([[0.1, 0.2]], dtype=np.float32)
 
     with pytest.raises(TypeError):
-        scan_files(tmp_path)  # type: ignore[call-arg]
+        call_invalid_signature(scan_files, tmp_path)
 
     with pytest.raises(TypeError):
-        get_embeddings(object(), ["payload"])  # type: ignore[call-arg]
+        call_invalid_signature(get_embeddings, object(), ["payload"])
 
     with pytest.raises(TypeError):
-        analyze_document(object(), "payload")  # type: ignore[call-arg]
+        call_invalid_signature(analyze_document, object(), "payload")
 
     with pytest.raises(TypeError):
-        analyze_and_build_payload(object(), "payload")  # type: ignore[call-arg]
+        call_invalid_signature(analyze_and_build_payload, object(), "payload")
 
     with pytest.raises(TypeError):
-        cluster_documents(embeddings)  # type: ignore[call-arg]
+        call_invalid_signature(cluster_documents, embeddings)
 
     with pytest.raises(TypeError):
-        generate_cluster_name(  # type: ignore[call-arg]
+        call_invalid_signature(
+            generate_cluster_name,
             object(),
             None,
             ["payload"],
@@ -59,7 +64,8 @@ def test_core_public_functions_require_explicit_config(tmp_path: Path) -> None:
         )
 
     with pytest.raises(TypeError):
-        generate_all_cluster_names(  # type: ignore[call-arg]
+        call_invalid_signature(
+            generate_all_cluster_names,
             object(),
             labels,
             ["payload"],
@@ -67,7 +73,7 @@ def test_core_public_functions_require_explicit_config(tmp_path: Path) -> None:
         )
 
     with pytest.raises(TypeError):
-        core_extract_content(sample)  # type: ignore[call-arg]
+        call_invalid_signature(core_extract_content, sample)
 
 
 def test_extractor_public_functions_require_explicit_config(tmp_path: Path) -> None:
@@ -75,22 +81,22 @@ def test_extractor_public_functions_require_explicit_config(tmp_path: Path) -> N
     sample.write_text("payload", encoding="utf-8")
 
     with pytest.raises(TypeError):
-        get_extractor(sample)  # type: ignore[call-arg]
+        call_invalid_signature(get_extractor, sample)
 
     with pytest.raises(TypeError):
-        extract_document(sample)  # type: ignore[call-arg]
+        call_invalid_signature(extract_document, sample)
 
     with pytest.raises(TypeError):
-        resolve_document_extraction(sample)  # type: ignore[call-arg]
+        call_invalid_signature(resolve_document_extraction, sample)
 
     with pytest.raises(TypeError):
-        extract_content(sample)  # type: ignore[call-arg]
+        call_invalid_signature(extract_content, sample)
 
     with pytest.raises(TypeError):
-        extract_with_vlm_fallback(sample, client=object())  # type: ignore[call-arg]
+        call_invalid_signature(extract_with_vlm_fallback, sample, client=object())
 
     with pytest.raises(TypeError):
-        needs_vlm_fallback("payload", sample)  # type: ignore[call-arg]
+        call_invalid_signature(needs_vlm_fallback, "payload", sample)
 
     with pytest.raises(TypeError):
-        classify_pdf_profile("payload", sample, success=True)  # type: ignore[call-arg]
+        call_invalid_signature(classify_pdf_profile, "payload", sample, success=True)
