@@ -25,8 +25,8 @@ YUKI.N> Observations complete. Reconstructing local data structures.
   使用 HDBSCAN 算法自动发现数据内在的簇结构，无需人工预设类别。
 - 🎯 **多维感知**
   不仅能解析文本，更能通过 VLM（视觉语言模型）理解图像内容的语义，实现真正的多模态聚类。
-- ⚡ **增量处理**
-  内置 SQLite 状态缓存与哈希去重机制，确保对海量数据的处理效率，避免重复计算。
+- ⚡ **缓存复用与去重**
+  内置 SQLite 缓存与文件哈希去重机制，减少重复的提取和 embedding 开销。
 - 🛡️ **安全模拟**
   提供执行前的模拟观测模式，生成详细的变更预测，确保数据重组的安全性。
 - 📜 **可审计执行**
@@ -94,7 +94,7 @@ uv run dite cache clear-vlm
 启动观测进程。扫描指定目录，提取特征并建立语义索引。
 
 ```bash
-dite scan <folder> [--output report.json] [--no-cache] [--no-knn-repair] [-v] [-q] [--color]
+dite scan <folder> [--output report.json] [--no-cache] [--no-knn-repair] [-v] [-q]
 ```
 
 | 参数              | 描述                                           |
@@ -104,14 +104,13 @@ dite scan <folder> [--output report.json] [--no-cache] [--no-knn-repair] [-v] [-
 | `--no-knn-repair` | 禁用 k-NN 噪音修复                             |
 | `--verbose`, `-v` | 详细输出（调试信息）                           |
 | `--quiet`, `-q`   | 静默模式（仅错误）                             |
-| `--color`         | 强制启用颜色输出（用于重定向到文件时保留颜色） |
 
 ### `dite organize`
 
 启动重构进程。基于语义簇将文件映射到新的物理路径。
 
 ```bash
-dite organize <folder> [--target <output>] [--dry-run|--execute|--output-script] [-v] [-q] [--color]
+dite organize <folder> [--target <output>] [--dry-run|--execute|--output-script] [-v] [-q]
 ```
 
 | 参数              | 描述                                  |
@@ -124,7 +123,6 @@ dite organize <folder> [--target <output>] [--dry-run|--execute|--output-script]
 | `--no-knn-repair` | 禁用 k-NN 噪音修复                    |
 | `--verbose`, `-v` | 详细输出                              |
 | `--quiet`, `-q`   | 静默模式                              |
-| `--color`         | 强制启用颜色输出                      |
 
 ### `dite pdf-check`
 
@@ -148,6 +146,7 @@ dite pdf-check <folder> [--no-cache] [--cached-vlm-only] [-v] [-q]
 - 通过检查只表示最终提取结果超过可用阈值，不代表整本文档已经完整提取。
 - 通过/失败使用的阈值来自 `processing.vlm_fallback_threshold`。
 - 当前设计里，VLM 的 10 页采样上限是固定行为，不是用户可配置项。
+- `--color` 是全局选项，如需使用，应当放在子命令之前，例如：`dite --color scan ...`。
 
 ## ⚙️ 配置
 
@@ -159,6 +158,8 @@ dite pdf-check <folder> [--no-cache] [--cached-vlm-only] [-v] [-q]
 
 `api.base_url` 必须填写为包含 `/v1` 的 OpenAI 兼容 API 根路径。
 例如：`https://api.example.com/v1`
+
+当前没有 CLI `--config` 覆盖选项；D.I.T.E. 始终使用上面的全局配置文件。
 
 完整参数定义请参阅 [`dite.yaml.example`](./dite.yaml.example)。
 

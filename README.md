@@ -25,8 +25,8 @@ Unlike traditional tools, it requires no predefined labels and does not rely on 
 Uses HDBSCAN algorithm to automatically discover intrinsic cluster structures in data, without requiring manually predefined categories.
 * 🎯 **Multi-dimensional Perception**
 Not only parses text, but also understands image content semantics through VLM (Vision Language Model), achieving true multimodal clustering.
-* ⚡ **Incremental Processing**
-Built-in SQLite state cache and hash-based deduplication mechanism ensures efficient processing of massive data while avoiding redundant computation.
+* ⚡ **Cache Reuse & Deduplication**
+Built-in SQLite cache and file-hash deduplication reduce repeated extraction and embedding work.
 * 🛡️ **Dry-Run Simulation**
 Provides pre-execution simulation observation mode, generating detailed change predictions to ensure data reorganization safety.
 * 📜 **Auditable Execution**
@@ -94,7 +94,7 @@ uv run dite cache clear-vlm
 Start observation process. Scan specified directory, extract features and build semantic index.
 
 ```bash
-dite scan <folder> [--output report.json] [--no-cache] [--no-knn-repair] [-v] [-q] [--color]
+dite scan <folder> [--output report.json] [--no-cache] [--no-knn-repair] [-v] [-q]
 ```
 
 | Parameter | Description |
@@ -104,14 +104,13 @@ dite scan <folder> [--output report.json] [--no-cache] [--no-knn-repair] [-v] [-
 | `--no-knn-repair` | Disable k-NN noise repair |
 | `--verbose`, `-v` | Verbose output (debug info) |
 | `--quiet`, `-q` | Quiet mode (errors only) |
-| `--color` | Force enable color output (for preserving colors when redirecting to file) |
 
 ### `dite organize`
 
 Start reorganization process. Map files to new physical paths based on semantic clusters.
 
 ```bash
-dite organize <folder> [--target <output>] [--dry-run|--execute|--output-script] [-v] [-q] [--color]
+dite organize <folder> [--target <output>] [--dry-run|--execute|--output-script] [-v] [-q]
 ```
 
 | Parameter | Description |
@@ -124,12 +123,10 @@ dite organize <folder> [--target <output>] [--dry-run|--execute|--output-script]
 | `--no-knn-repair` | Disable k-NN noise repair |
 | `--verbose`, `-v` | Verbose output |
 | `--quiet`, `-q` | Quiet mode |
-| `--color` | Force enable color output |
 
 ### `dite pdf-check`
 
-Quickly check whether final PDF extraction outputs are usable enough, without
-running embedding, clustering, or naming.
+Quickly check whether final PDF extraction outputs are usable enough, without running embedding, clustering, or naming.
 
 ```bash
 dite pdf-check <folder> [--no-cache] [--cached-vlm-only] [-v] [-q]
@@ -146,11 +143,10 @@ Notes:
 
 - This is a smoke check, not a full-document completeness audit.
 - When PDF fallback uses VLM, it samples only the first 10 pages.
-- A passing result means the final extracted output cleared the usability
-  threshold, not that the whole document was extracted completely.
+- A passing result means the final extracted output cleared the usability threshold, not that the whole document was extracted completely.
 - The pass/fail threshold is `processing.vlm_fallback_threshold`.
-- The 10-page VLM sampling limit is fixed in the current design and is not a
-  user-facing config option.
+- The 10-page VLM sampling limit is fixed in the current design and is not a user-facing config option.
+- `--color` is a global option and should be passed before the subcommand when needed, for example: `dite --color scan ...`.
 
 ## ⚙️ Configuration
 
@@ -163,16 +159,15 @@ If the directory or file does not exist, D.I.T.E. creates it automatically with 
 `api.base_url` must be the OpenAI-compatible API root including `/v1`.
 For example: `https://api.example.com/v1`
 
+There is currently no CLI `--config` override; D.I.T.E. always uses the global config file above.
+
 See [`dite.yaml.example`](./dite.yaml.example) for complete parameter definitions.
 
 For extraction-related behavior:
 
-- `processing.vlm_fallback_threshold` is the usability threshold used by
-  `pdf-check`.
-- `pdf-check` evaluates final extraction usability, not full-document
-  completeness.
-- PDF VLM fallback samples only the first 10 pages, and that sampling limit is
-  currently fixed rather than configurable.
+- `processing.vlm_fallback_threshold` is the usability threshold used by `pdf-check`.
+- `pdf-check` evaluates final extraction usability, not full-document completeness.
+- PDF VLM fallback samples only the first 10 pages, and that sampling limit is currently fixed rather than configurable.
 
 ### Language Configuration
 
