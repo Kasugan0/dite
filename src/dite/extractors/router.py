@@ -350,7 +350,9 @@ def resolve_document_extraction(
                 "debug_extract_doc_result",
                 extractor=resolved_primary.extractor,
                 success=resolved_primary.success,
-                length=len(resolved_primary.content if resolved_primary.success else ""),
+                length=len(
+                    resolved_primary.content if resolved_primary.success else ""
+                ),
                 error=resolved_primary.error or "-",
             )
         )

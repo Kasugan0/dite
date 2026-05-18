@@ -601,7 +601,8 @@ def test_pdf_check_cli_reports_real_fixture_failure_corpus_truthfully(
     ]
     weak_names = [
         "物理考后再练.pdf",
-        "线性代数及其应用 (David C. Lay Steven R. Lay Judi J. McDonald) (Z-Library).pdf",
+        "线性代数及其应用 (David C. Lay Steven R. Lay Judi J. McDonald) "
+        "(Z-Library).pdf",
     ]
     duplicate_names = [
         "2506.12116v3.pdf",

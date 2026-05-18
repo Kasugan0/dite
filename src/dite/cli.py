@@ -144,6 +144,7 @@ def _get_docling_helpers():
         has_docling_pdf_artifacts,
     )
 
+
 # 创建 CLI 应用
 app = typer.Typer(
     name="dite",
@@ -277,15 +278,11 @@ def _label_pdf_reason(reason: str | None) -> str:
         "extractor_failed": t("pdf_check_reason_extractor_failed"),
         "glyph_noise_dominates": t("pdf_check_reason_glyph_noise_dominates"),
         "no_effective_text": t("pdf_check_reason_no_effective_text"),
-        "parser_timeout_or_broken": t(
-            "extract_profile_parser_timeout_or_broken"
-        ),
+        "parser_timeout_or_broken": t("extract_profile_parser_timeout_or_broken"),
         "text_with_glyph_noise": t("pdf_check_reason_text_with_glyph_noise"),
         "usable_text_layer": t("pdf_check_reason_usable_text_layer"),
         "vlm_api_allowed": t("pdf_check_reason_vlm_api_allowed"),
-        "vlm_fallback_unavailable": t(
-            "pdf_check_reason_vlm_fallback_unavailable"
-        ),
+        "vlm_fallback_unavailable": t("pdf_check_reason_vlm_fallback_unavailable"),
     }
     return labels.get(reason, reason)
 
@@ -364,7 +361,7 @@ def _build_report(
     noise = []
     failed_count = 0
 
-    for file, content, label in zip(files, contents, labels):
+    for file, content, label in zip(files, contents, labels, strict=True):
         is_failed = len(content.strip()) < 10
         if is_failed:
             failed_count += 1
@@ -586,9 +583,7 @@ def scan(
     n_noise = int(np.sum(result.labels == -1))
     status_msg = t("scan_clustering_done", clusters=n_clusters, noise=n_noise)
     if result.noise_repaired > 0:
-        status_msg += (
-            f" [{t('scan_status_knn_suffix', count=result.noise_repaired)}]"
-        )
+        status_msg += f" [{t('scan_status_knn_suffix', count=result.noise_repaired)}]"
     logger.status(status_msg)
 
     status_msg = t("scan_naming_done")
@@ -663,6 +658,7 @@ def pdf_check(
         raise typer.Exit(1)
 
     from dite.core.scanner import scan_files
+
     pipeline_options_cls = _get_pipeline_options_cls()
     pipeline_service_cls = _get_pipeline_service_cls()
 

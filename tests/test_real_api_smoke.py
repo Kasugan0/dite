@@ -60,7 +60,8 @@ def _require_real_pdf_corpus_enabled() -> Path:
 
     if not has_docling_pdf_artifacts():
         pytest.skip(
-            "Docling PDF models are not ready. Run `uv run dite setup docling-pdf` first."
+            "Docling PDF models are not ready. Run "
+            "`uv run dite setup docling-pdf` first."
         )
 
     corpus_dir = Path(__file__).resolve().parents[1] / "docs" / "test"
@@ -86,7 +87,8 @@ def _real_failure_corpus_files(corpus_dir: Path) -> list[Path]:
         "线性代数 中文第5版【Gilbert Strang】.pdf",
         "线性代数及其应用（第六版） - Linear Algebra and Its Applications.pdf",
         "物理考后再练.pdf",
-        "线性代数及其应用 (David C. Lay Steven R. Lay Judi J. McDonald) (Z-Library).pdf",
+        "线性代数及其应用 (David C. Lay Steven R. Lay Judi J. McDonald) "
+        "(Z-Library).pdf",
     ]
     return [corpus_dir / name for name in names]
 
@@ -105,7 +107,9 @@ def _average_pairwise_distance(vectors: np.ndarray, indices: list[int]) -> float
     pairs: list[float] = []
     for offset, left in enumerate(indices):
         for right in indices[offset + 1 :]:
-            pairs.append(float(cosine_distances(vectors[[left]], vectors[[right]])[0][0]))
+            pairs.append(
+                float(cosine_distances(vectors[[left]], vectors[[right]])[0][0])
+            )
     return float(sum(pairs) / len(pairs))
 
 
@@ -182,7 +186,9 @@ def _write_real_api_config(
     )
 
 
-def _link_real_docling_models_into_home(home_dir: Path, source_models_dir: Path) -> None:
+def _link_real_docling_models_into_home(
+    home_dir: Path, source_models_dir: Path
+) -> None:
     target_models_dir = home_dir / ".cache" / "dite" / "docling" / "models"
     target_models_dir.parent.mkdir(parents=True, exist_ok=True)
     if target_models_dir.exists() or target_models_dir.is_symlink():
@@ -261,9 +267,7 @@ def test_real_api_cluster_name_smoke() -> None:
     name = generate_cluster_name(
         client=client,
         cluster_embeddings=None,
-        sample_contents=[
-            "这批文档主要讨论机器学习中的监督学习、模型评估和特征工程。"
-        ],
+        sample_contents=["这批文档主要讨论机器学习中的监督学习、模型评估和特征工程。"],
         sample_names=["ml_overview.md"],
         config=config,
         llm_model=llm_model,
@@ -371,7 +375,6 @@ def test_real_api_generate_all_cluster_names_smoke() -> None:
     assert all(name not in {"未命名", "Unnamed"} for name in cluster_names.values())
 
 
-
 def test_real_api_cluster_name_file_name_only_smoke() -> None:
     client, _, llm_model = _real_api_settings()
     config = load_config()
@@ -410,7 +413,8 @@ def test_real_api_pipeline_end_to_end_supports_markdown(tmp_path: Path) -> None:
     )
 
     label_by_name = {
-        file.name: int(label) for file, label in zip(result.files, result.labels, strict=True)
+        file.name: int(label)
+        for file, label in zip(result.files, result.labels, strict=True)
     }
     ml_labels = {label_by_name[path.name] for path in written["ml"]}
     finance_labels = {label_by_name[path.name] for path in written["finance"]}
@@ -418,7 +422,9 @@ def test_real_api_pipeline_end_to_end_supports_markdown(tmp_path: Path) -> None:
     assert len(result.files) == 6
     assert result.embeddings.shape[0] == 6
     assert np.isfinite(result.embeddings).all()
-    assert all(path.suffix.lower() in {".txt", ".md", ".markdown"} for path in result.files)
+    assert all(
+        path.suffix.lower() in {".txt", ".md", ".markdown"} for path in result.files
+    )
     assert -1 not in ml_labels
     assert -1 not in finance_labels
     assert len(ml_labels) == 1
@@ -457,9 +463,7 @@ def test_real_api_cli_scan_reports_markdown_files(
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
     reported_names = {
-        entry["name"]
-        for cluster in report["clusters"]
-        for entry in cluster["files"]
+        entry["name"] for cluster in report["clusters"] for entry in cluster["files"]
     } | {entry["name"] for entry in report["noise"]}
 
     assert report["summary"]["total_files"] == 6
@@ -496,10 +500,14 @@ def test_real_api_extract_files_failure_corpus_matches_current_baseline(
 
     threshold = config.processing.vlm_fallback_threshold
     weak_reports = [
-        report for report in result.file_reports if report.final_effective_length < threshold
+        report
+        for report in result.file_reports
+        if report.final_effective_length < threshold
     ]
     profile_counts = {
-        profile: sum(1 for report in result.file_reports if report.source_profile == profile)
+        profile: sum(
+            1 for report in result.file_reports if report.source_profile == profile
+        )
         for profile in {"parser_timeout_or_broken", "weak_text"}
     }
 

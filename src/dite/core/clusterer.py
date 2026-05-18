@@ -218,7 +218,10 @@ def _build_cluster_naming_prompt(
 ) -> str:
     """Build a locale-aware prompt for cluster naming."""
     if get_locale() == "zh-CN":
-        forbidden_terms = "「聚类」「分类」「类别」「类型」「封面」「扫描」「文档」「资料」「合集」「汇编」"
+        forbidden_terms = (
+            "「聚类」「分类」「类别」「类型」「封面」「扫描」「文档」"
+            "「资料」「合集」「汇编」"
+        )
         if compact_samples:
             combined = "\n---\n".join(compact_samples[:top_k])
             return (
@@ -241,14 +244,19 @@ def _build_cluster_naming_prompt(
             f"3. 直接输出名称，不要解释"
         )
 
-    forbidden_terms = '"cluster", "category", "type", "cover", "scan", "document", "file", "collection", "archive"'
+    forbidden_terms = (
+        '"cluster", "category", "type", "cover", "scan", "document", '
+        '"file", "collection", "archive"'
+    )
     if compact_samples:
         combined = "\n---\n".join(compact_samples[:top_k])
         return (
-            f"Here are representative documents from the same category:\n\n{combined}\n\n"
+            "Here are representative documents from the same category:\n\n"
+            f"{combined}\n\n"
             f"Name this category in 2-4 English words.\n"
             f"Requirements:\n"
-            f"1. The name must describe the topical content, not the document form or medium\n"
+            "1. The name must describe the topical content, not the document "
+            "form or medium\n"
             f"2. Do not use these terms: {forbidden_terms}\n"
             f"3. Prefer topic words from the title candidate and file name\n"
             f"4. Output only the name"
@@ -256,10 +264,12 @@ def _build_cluster_naming_prompt(
 
     names = "\n".join(sample_names[:top_k])
     return (
-        f"These files belong to the same category. Infer the category from their file names:\n\n{names}\n\n"
+        "These files belong to the same category. Infer the category from "
+        f"their file names:\n\n{names}\n\n"
         f"Name this category in 2-4 English words.\n"
         f"Requirements:\n"
-        f"1. The name must describe the topical content, not the document form or medium\n"
+        "1. The name must describe the topical content, not the document "
+        "form or medium\n"
         f"2. Do not use these terms: {forbidden_terms}\n"
         f"3. Output only the name"
     )
@@ -805,9 +815,12 @@ def generate_all_cluster_names(
             results = [name_cluster(label) for label in cluster_labels]
         else:
             results_by_label: dict[int, tuple[str, int]] = {}
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max_workers
+            ) as executor:
                 future_to_label = {
-                    executor.submit(name_cluster, label): label for label in cluster_labels
+                    executor.submit(name_cluster, label): label
+                    for label in cluster_labels
                 }
                 for future in concurrent.futures.as_completed(future_to_label):
                     label, display_name, count = future.result()
@@ -827,11 +840,13 @@ def generate_all_cluster_names(
             if embeddings is not None:
                 cluster_embeddings = embeddings[cluster_indices]
 
-            prompt, selected_contents, selected_names = _prepare_cluster_name_request_inputs(
-                cluster_embeddings,
-                cluster_contents,
-                cluster_file_names,
-                top_k=5,
+            prompt, selected_contents, selected_names = (
+                _prepare_cluster_name_request_inputs(
+                    cluster_embeddings,
+                    cluster_contents,
+                    cluster_file_names,
+                    top_k=5,
+                )
             )
             request_meta.append(
                 (label, selected_contents, selected_names, len(cluster_indices))

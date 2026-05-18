@@ -273,7 +273,9 @@ class Messages:
 ZH_CN = Messages(
     # CLI general
     cli_title="DITE - 多模态文件智能聚类工具",
-    cli_description="DITE - Document Insight & Taxonomy Engine\n\n多模态文件智能聚类工具",
+    cli_description=(
+        "DITE - Document Insight & Taxonomy Engine\n\n多模态文件智能聚类工具"
+    ),
     version_prefix="DITE version",
     # Scan command
     scan_description="扫描文件夹并进行聚类分析",
@@ -332,7 +334,8 @@ ZH_CN = Messages(
     cache_vlm_fallback="最终使用 VLM: {count}",
     cache_duplicate="重复文件: {count}",
     scan_extraction_verbose=(
-        "提取细节: 主解析失败={primary_failures}, 源内容需回退={source_fallback_needed}, "
+        "提取细节: 主解析失败={primary_failures}, "
+        "源内容需回退={source_fallback_needed}, "
         "VLM页级调用={vlm_api_page_calls}"
     ),
     extract_source_primary="主解析结果",
@@ -369,7 +372,9 @@ ZH_CN = Messages(
     # Organize command
     organize_description="整理文件夹中的文档",
     organize_specify_mode="请指定 --dry-run, --execute 或 --output-script",
-    organize_mode_help="使用 --dry-run 预览，使用 --execute 执行，使用 --output-script 生成脚本",
+    organize_mode_help=(
+        "使用 --dry-run 预览，使用 --execute 执行，使用 --output-script 生成脚本"
+    ),
     organize_folder_not_found="文件夹 {folder} 不存在",
     organize_preview_title="📁 DITE 文件整理预览",
     organize_source_folder="源文件夹:",
@@ -386,7 +391,9 @@ ZH_CN = Messages(
     organize_confirm="确认执行文件移动?",
     organize_done="完成: {success} 个文件已移动, {failed} 个失败",
     organize_cancelled="已取消",
-    organize_dry_run_hint="这是预览模式。使用 --execute 执行或 --output-script 生成脚本。",
+    organize_dry_run_hint=(
+        "这是预览模式。使用 --execute 执行或 --output-script 生成脚本。"
+    ),
     organize_script_header="DITE 文件整理脚本",
     organize_script_usage="使用方法:",
     organize_script_create_dirs="创建目录",
@@ -410,7 +417,9 @@ ZH_CN = Messages(
     cache_db_size="数据库大小:",
     # Errors
     error_copy_failed="复制验证失败",
-    error_api_connection_failed="API 连接失败。请检查 api.base_url、api.api_key、网络和代理设置。",
+    error_api_connection_failed=(
+        "API 连接失败。请检查 api.base_url、api.api_key、网络和代理设置。"
+    ),
     error_api_request_failed="API 请求失败: {error}",
     error_processing_failed="处理失败: {error}",
     error_docling_pdf_models_missing="Docling PDF 模型未安装。请先运行 `{command}`。",
@@ -477,7 +486,9 @@ ZH_CN = Messages(
     debug_extract_processing_file="处理文件: [path]{path}[/path]",
     debug_extract_hash="  文件哈希: [hash]{hash}[/hash]",
     debug_extract_doc_cache_hit="  文档缓存命中",
-    debug_extract_doc_cache_duplicate_source="    复用已缓存源文件: [path]{source}[/path]",
+    debug_extract_doc_cache_duplicate_source=(
+        "    复用已缓存源文件: [path]{source}[/path]"
+    ),
     debug_extract_doc_cache_miss="  文档缓存未命中",
     debug_extract_doc_result=(
         "  文档提取: extractor={extractor}, success={success}, "
@@ -488,7 +499,8 @@ ZH_CN = Messages(
         "threshold={threshold}, needed={needed}"
     ),
     debug_pdf_profile=(
-        "  PDF 分类: kind={kind}, reason={reason}, effective_length={effective_length}, "
+        "  PDF 分类: kind={kind}, reason={reason}, "
+        "effective_length={effective_length}, "
         "glyph_noise={glyph_noise_tokens}, fallback={needs_vlm_fallback}"
     ),
     debug_extract_vlm_cache_hit="  VLM 缓存命中 (length={length})",
@@ -505,9 +517,7 @@ ZH_CN = Messages(
         "最终使用VLM={selected_vlm_files}, VLM页级调用={vlm_api_page_calls}, "
         "重复文件={duplicates}"
     ),
-    debug_vector_cache_summary=(
-        "Embedding 缓存: 命中 {hits} 个, 未命中 {misses} 个"
-    ),
+    debug_vector_cache_summary=("Embedding 缓存: 命中 {hits} 个, 未命中 {misses} 个"),
     debug_vectorizing_documents="向量化 {count} 个文档",
     debug_vectorizing_model="使用模型: {model}",
     debug_vector_fallback_names="  {count} 个文件使用文件名回退: {names}",
@@ -537,9 +547,7 @@ ZH_CN = Messages(
         "(distance={distance:.4f}, "
         "threshold={threshold:.4f})"
     ),
-    debug_cluster_knn_summary=(
-        "k-NN 修复了 {repaired} 个噪音点，保留 {kept} 个噪音点"
-    ),
+    debug_cluster_knn_summary=("k-NN 修复了 {repaired} 个噪音点，保留 {kept} 个噪音点"),
     debug_cluster_name_empty_response=(
         "簇命名响应为空: model={model}, finish_reason={finish_reason}, "
         "reasoning_chars={reasoning_chars}"
@@ -550,7 +558,9 @@ ZH_CN = Messages(
     debug_cluster_name_failed_fallback="簇命名失败，使用回退名称 {fallback}: {error}",
     debug_cluster_merge="合并簇 {source} -> {target} (名称: {name})",
     debug_cluster_name_result="簇 {label} 命名为 {name} (files={count})",
-    debug_analyzer_json_parse_failed="JSON 解析失败 (尝试 {attempt}/{max_retries}): {error}",
+    debug_analyzer_json_parse_failed=(
+        "JSON 解析失败 (尝试 {attempt}/{max_retries}): {error}"
+    ),
     debug_analyzer_api_failed="API 调用失败 (尝试 {attempt}/{max_retries}): {error}",
     warning_unsupported_file_format="不支持的文件格式: {suffix}",
     warning_extractor_failed="{extractor} 处理 {name} 失败: {error}",
@@ -559,7 +569,9 @@ ZH_CN = Messages(
     warning_analyzer_default_used="文档分析失败，使用默认值",
     warning_analyzer_failed="文档分析失败: {error}",
     debug_vlm_page_processing="  处理第 {page}/{total} 页 ({width}x{height})",
-    debug_vlm_page_resized="  缩放: {old_width}x{old_height} -> {new_width}x{new_height}",
+    debug_vlm_page_resized=(
+        "  缩放: {old_width}x{old_height} -> {new_width}x{new_height}"
+    ),
     debug_vlm_image_size="  图片大小: {size_kb:.1f} KB",
     debug_vlm_api_call="  调用 VLM API...",
     debug_vlm_page_done="  第 {page} 页完成 ({length} 字符)",
@@ -570,7 +582,10 @@ ZH_CN = Messages(
 EN = Messages(
     # CLI general
     cli_title="DITE - Multimodal Document Clustering Tool",
-    cli_description="DITE - Document Insight & Taxonomy Engine\n\nMultimodal document intelligent clustering tool",
+    cli_description=(
+        "DITE - Document Insight & Taxonomy Engine\n\n"
+        "Multimodal document intelligent clustering tool"
+    ),
     version_prefix="DITE version",
     # Scan command
     scan_description="Scan folder and perform cluster analysis",
@@ -584,7 +599,9 @@ EN = Messages(
     scan_vectorizing="Vectorizing...",
     scan_vectorizing_done="Vectorization completed (dim: {dim})",
     scan_clustering="Clustering...",
-    scan_clustering_done="Clustering completed ({clusters} clusters, {noise} uncategorized)",
+    scan_clustering_done=(
+        "Clustering completed ({clusters} clusters, {noise} uncategorized)"
+    ),
     scan_naming="Generating cluster names...",
     scan_naming_done="Cluster naming completed",
     scan_report_saved="Report saved: {path}",
@@ -599,13 +616,15 @@ EN = Messages(
     pdf_check_done=(
         "PDF smoke check completed (doc cache: {doc_cache_hits}, "
         "VLM cache: {vlm_cache_hits}, primary failures: {primary_failures}, "
-        "fallback needed: {source_fallback_needed}, selected VLM: {selected_vlm_files}, "
+        "fallback needed: {source_fallback_needed}, "
+        "selected VLM: {selected_vlm_files}, "
         "VLM page calls: {vlm_api_page_calls}, "
         "duplicates: {duplicates}, weak: {weak}, empty: {empty})"
     ),
     pdf_check_note=(
         "VLM samples only the first 10 pages. This command checks whether the "
-        "final extraction output is usable, not whether the full document was completely extracted."
+        "final extraction output is usable, not whether the full document was "
+        "completely extracted."
     ),
     pdf_check_weak_table_title="Weak final PDF outputs",
     pdf_check_verbose_table_title="Extraction details",
@@ -669,7 +688,9 @@ EN = Messages(
     # Organize command
     organize_description="Organize documents in folder",
     organize_specify_mode="Please specify --dry-run, --execute, or --output-script",
-    organize_mode_help="Use --dry-run to preview, --execute to run, --output-script to generate script",
+    organize_mode_help=(
+        "Use --dry-run to preview, --execute to run, --output-script to generate script"
+    ),
     organize_folder_not_found="Folder {folder} does not exist",
     organize_preview_title="📁 DITE File Organization Preview",
     organize_source_folder="Source folder:",
@@ -686,17 +707,24 @@ EN = Messages(
     organize_confirm="Confirm file move?",
     organize_done="Done: {success} files moved, {failed} failed",
     organize_cancelled="Cancelled",
-    organize_dry_run_hint="This is preview mode. Use --execute to run or --output-script to generate script.",
+    organize_dry_run_hint=(
+        "This is preview mode. Use --execute to run or --output-script to "
+        "generate script."
+    ),
     organize_script_header="DITE File Organization Script",
     organize_script_usage="Usage:",
     organize_script_create_dirs="Create directories",
     organize_script_copy_files="Copy files (using cp + rm instead of mv for safety)",
     organize_script_verify="Delete original files after verification",
     organize_script_done="✅ Done! Copied {count} files",
-    organize_script_warning="⚠️  Original files not deleted, please confirm and delete manually",
+    organize_script_warning=(
+        "⚠️  Original files not deleted, please confirm and delete manually"
+    ),
     # Cache commands
     cache_cleared="Cleared {count} cache entries",
-    cache_vlm_cleared="Cleared {count} VLM cache entries (document conversion results preserved)",
+    cache_vlm_cleared=(
+        "Cleared {count} VLM cache entries (document conversion results preserved)"
+    ),
     cache_status_title="Cache Status",
     cache_db_path="Database path:",
     cache_total_entries="Total entries:",
@@ -716,11 +744,15 @@ EN = Messages(
     ),
     error_api_request_failed="API request failed: {error}",
     error_processing_failed="Processing failed: {error}",
-    error_docling_pdf_models_missing="Docling PDF models are not installed. Run `{command}` first.",
+    error_docling_pdf_models_missing=(
+        "Docling PDF models are not installed. Run `{command}` first."
+    ),
     error_docling_pdf_timeout="Docling PDF extraction timed out after {seconds:g}s",
     error_pdf_render_failed="PDF rendering failed",
     error_pdf_vlm_no_usable_content="VLM fallback returned no usable content",
-    error_text_decode_failed="Unable to decode file with attempted encodings: {encodings}",
+    error_text_decode_failed=(
+        "Unable to decode file with attempted encodings: {encodings}"
+    ),
     error_vlm_client_not_initialized="VLM client is not initialized",
     # Progress
     progress_executing="Executing",
@@ -780,7 +812,9 @@ EN = Messages(
     debug_extract_processing_file="Processing file: [path]{path}[/path]",
     debug_extract_hash="  File hash: [hash]{hash}[/hash]",
     debug_extract_doc_cache_hit="  Doc cache hit",
-    debug_extract_doc_cache_duplicate_source="    Reused cached source: [path]{source}[/path]",
+    debug_extract_doc_cache_duplicate_source=(
+        "    Reused cached source: [path]{source}[/path]"
+    ),
     debug_extract_doc_cache_miss="  Doc cache miss",
     debug_extract_doc_result=(
         "  Document extraction: extractor={extractor}, success={success}, "
@@ -801,12 +835,15 @@ EN = Messages(
         "  VLM result: success={success}, length={length}, error={error}"
     ),
     debug_extract_vlm_selected="  Using VLM result ({vlm_length} > {doc_length})",
-    debug_extract_vlm_skipped="  Keeping document extraction ({doc_length} >= {vlm_length})",
+    debug_extract_vlm_skipped=(
+        "  Keeping document extraction ({doc_length} >= {vlm_length})"
+    ),
     debug_extract_truncated="  Content truncated: {original} -> {limit}",
     debug_extract_summary=(
         "Extraction summary: doc_cache_hits={doc_cache_hits}, "
         "vlm_cache_hits={vlm_cache_hits}, primary_failures={primary_failures}, "
-        "fallback_needed={source_fallback_needed}, selected_vlm_files={selected_vlm_files}, "
+        "fallback_needed={source_fallback_needed}, "
+        "selected_vlm_files={selected_vlm_files}, "
         "vlm_api_page_calls={vlm_api_page_calls}, duplicates={duplicates}"
     ),
     debug_vector_cache_summary="Embedding cache: {hits} hits, {misses} misses",
@@ -824,7 +861,9 @@ EN = Messages(
     debug_cluster_hdbscan_epsilon="  cluster_selection_epsilon: {value}",
     debug_cluster_hdbscan_method="  cluster_selection_method: {value}",
     debug_cluster_input_vectors="  Input vectors: {count}, dimension {dimension}",
-    debug_cluster_initial_result="Initial clustering: {clusters} clusters, {noise} noise points",
+    debug_cluster_initial_result=(
+        "Initial clustering: {clusters} clusters, {noise} noise points"
+    ),
     debug_cluster_sizes="  Cluster sizes: {sizes}",
     debug_cluster_knn_dynamic_threshold=(
         "k-NN dynamic threshold: {threshold:.4f} "
@@ -849,15 +888,23 @@ EN = Messages(
     debug_cluster_name_retry=(
         "Cluster naming request failed (attempt {attempt}/{max_retries}): {error}"
     ),
-    debug_cluster_name_empty_fallback="Cluster naming returned empty content, using fallback: {fallback}",
-    debug_cluster_name_invalid_fallback="Cluster naming returned invalid name, using fallback: {fallback}",
-    debug_cluster_name_failed_fallback="Cluster naming failed, using fallback {fallback}: {error}",
+    debug_cluster_name_empty_fallback=(
+        "Cluster naming returned empty content, using fallback: {fallback}"
+    ),
+    debug_cluster_name_invalid_fallback=(
+        "Cluster naming returned invalid name, using fallback: {fallback}"
+    ),
+    debug_cluster_name_failed_fallback=(
+        "Cluster naming failed, using fallback {fallback}: {error}"
+    ),
     debug_cluster_merge="Merged cluster {source} -> {target} (name: {name})",
     debug_cluster_name_result="Cluster {label} named {name} (files={count})",
     debug_analyzer_json_parse_failed=(
         "JSON parsing failed (attempt {attempt}/{max_retries}): {error}"
     ),
-    debug_analyzer_api_failed="API call failed (attempt {attempt}/{max_retries}): {error}",
+    debug_analyzer_api_failed=(
+        "API call failed (attempt {attempt}/{max_retries}): {error}"
+    ),
     warning_unsupported_file_format="Unsupported file format: {suffix}",
     warning_extractor_failed="{extractor} failed on {name}: {error}",
     warning_pdf2image_missing="pdf2image is not installed, cannot use VLM fallback",

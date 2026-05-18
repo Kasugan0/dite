@@ -151,11 +151,17 @@ def test_get_extractor_routes_by_real_type_and_extension(
 
     wrong_suffix_ooxml = tmp_path / "slides.ppt"
     wrong_suffix_ooxml.write_bytes(b"PK\x03\x04fake")
-    assert get_extractor(wrong_suffix_ooxml, config=Config(), registry=registry) is registry.docling
+    assert (
+        get_extractor(wrong_suffix_ooxml, config=Config(), registry=registry)
+        is registry.docling
+    )
 
     old_office = tmp_path / "legacy.docx"
     old_office.write_bytes(b"\xd0\xcf\x11\xe0fake")
-    assert get_extractor(old_office, config=Config(), registry=registry) is registry.markitdown
+    assert (
+        get_extractor(old_office, config=Config(), registry=registry)
+        is registry.markitdown
+    )
 
     pdf = tmp_path / "paper.bin"
     pdf.write_bytes(b"%PDF-1.7")

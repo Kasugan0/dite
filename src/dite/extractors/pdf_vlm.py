@@ -218,7 +218,9 @@ def extract_pdf_with_vlm_sampling(
                     page_content = (response.choices[0].message.content or "").strip()
                     if not page_content:
                         continue
-                    all_contents.append(_format_vlm_page_content(page_num, page_content))
+                    all_contents.append(
+                        _format_vlm_page_content(page_num, page_content)
+                    )
                     logger.debug(
                         t(
                             "debug_vlm_page_done",

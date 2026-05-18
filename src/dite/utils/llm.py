@@ -12,10 +12,7 @@ def _translate_reasoning_controls(
     profile: ChatCompletionProfileConfig,
 ) -> dict[str, Any]:
     """Translate generic reasoning controls into provider-specific request fields."""
-    if (
-        profile.reasoning_mode == "default"
-        and profile.thinking_budget is None
-    ):
+    if profile.reasoning_mode == "default" and profile.thinking_budget is None:
         return {}
 
     base_url = str(getattr(client, "base_url", "")).casefold()
@@ -96,7 +93,9 @@ def should_retry_api_error(exc: APIError) -> bool:
     """Return whether the provider error is worth retrying."""
     status_code = getattr(exc, "status_code", None)
     body = getattr(exc, "body", None)
-    error_code = body.get("code") if isinstance(body, dict) else getattr(exc, "code", None)
+    error_code = (
+        body.get("code") if isinstance(body, dict) else getattr(exc, "code", None)
+    )
 
     if status_code is None:
         return True

@@ -85,8 +85,8 @@ def test_docling_pdf_returns_clear_error_when_models_missing(
     assert result.success is False
     assert result.extractor == "docling"
     assert (
-        result.error
-        == "Docling PDF models are not installed. Run `uv run dite setup docling-pdf` first."
+        result.error == "Docling PDF models are not installed. Run "
+        "`uv run dite setup docling-pdf` first."
     )
 
 

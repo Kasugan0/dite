@@ -55,7 +55,9 @@ def test_dite_scan_help_with_en_us_locale(tmp_path: Path, monkeypatch) -> None:
     assert result.exit_code == 0
 
 
-def test_dite_help_uses_runtime_locale_after_import(tmp_path: Path, monkeypatch) -> None:
+def test_dite_help_uses_runtime_locale_after_import(
+    tmp_path: Path, monkeypatch
+) -> None:
     runner = CliRunner()
     _write_test_config(tmp_path, monkeypatch, locale="en")
 

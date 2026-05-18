@@ -5,7 +5,6 @@ description = "Document Insight & Taxonomy Engine - Multimodal document intellig
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    # 核心依赖
     "docling>=2.0.0",
     "hdbscan>=0.8.33",
     "numpy>=1.26.0",
@@ -51,12 +50,6 @@ select = [
     "UP",     # pyupgrade
     "SIM",    # flake8-simplify
 ]
-ignore = [
-    "E501",   # line too long (handled by formatter)
-    "B008",   # do not perform function calls in argument defaults
-    "B905",   # zip() without strict= (not needed for same-length iterables)
-]
-
 [tool.ruff.lint.isort]
 known-first-party = ["dite"]
 

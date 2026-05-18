@@ -2076,7 +2076,6 @@ def test_repair_noise_with_knn_returns_unchanged_without_noise() -> None:
     assert np.array_equal(repaired_labels, labels)
 
 
-
 def test_repair_noise_with_knn_returns_unchanged_without_core_cluster() -> None:
     embeddings = np.array(
         [
@@ -2219,7 +2218,6 @@ def test_cluster_documents_uses_clustering_config_without_knn_when_disabled(
         "cluster_selection_method": "leaf",
     }
     assert captured["fit_predict_shape"] == (2, 2)
-
 
 
 def test_cluster_documents_passes_knn_overrides_to_repair(monkeypatch) -> None:
@@ -2789,8 +2787,7 @@ def test_generate_all_cluster_names_prewarms_client_resources_before_worker_thre
     assert tracker["completions_init_threads"] == [main_thread_id]
 
 
-def test_generate_all_cluster_names_integration_merges_same_names_deterministically(
-    ) -> None:
+def test_generate_all_cluster_names_integration_merges_same_names_deterministically():
     from dite.core.clusterer import generate_all_cluster_names
 
     calls: list[str] = []
@@ -3040,7 +3037,9 @@ def test_generate_all_cluster_names_uses_async_request_runtime_when_available(
             ]
 
     def fail_generate_cluster_name(*args, **kwargs):
-        raise AssertionError("sync generate_cluster_name should not run when runtime exists")
+        raise AssertionError(
+            "sync generate_cluster_name should not run when runtime exists"
+        )
 
     monkeypatch.setattr(clusterer, "generate_cluster_name", fail_generate_cluster_name)
 
@@ -3260,7 +3259,9 @@ def test_generate_cluster_name_truncates_long_contents_before_api_call() -> None
     assert captured[0]["extra_body"] == {"enable_thinking": False}
 
 
-def test_generate_cluster_name_uses_representative_top_k_samples_from_embeddings() -> None:
+def test_generate_cluster_name_uses_representative_top_k_samples_from_embeddings() -> (
+    None
+):
     from dite.core.clusterer import generate_cluster_name
 
     captured: list[dict] = []
@@ -3374,7 +3375,7 @@ def test_generate_cluster_name_uses_file_name_prompt_when_all_contents_blank() -
     assert "Content excerpt:" not in prompt
 
 
-def test_generate_cluster_name_falls_back_to_file_name_when_contents_blank_and_api_fails() -> None:
+def test_generate_cluster_name_falls_back_to_file_name_when_blank_and_api_fails():
     from dite.core.clusterer import generate_cluster_name
 
     class _Completions:
@@ -3470,7 +3471,6 @@ def test_generate_cluster_name_builds_zh_prompt_from_content_samples() -> None:
     assert "请用2-4个中文词为这个类别命名。" in prompt
 
 
-
 def test_generate_cluster_name_truncates_long_valid_model_output() -> None:
     from dite.core.clusterer import CLUSTER_NAME_OUTPUT_LIMIT, generate_cluster_name
 
@@ -3505,9 +3505,10 @@ def test_generate_cluster_name_truncates_long_valid_model_output() -> None:
         llm_model="dummy-model",
     )
 
-    assert name == "Advanced Linear Algebra Reference Materials"[
-        :CLUSTER_NAME_OUTPUT_LIMIT
-    ]
+    assert (
+        name
+        == "Advanced Linear Algebra Reference Materials"[:CLUSTER_NAME_OUTPUT_LIMIT]
+    )
 
 
 def test_cluster_naming_helper_normalization_and_invalid_detection() -> None:
@@ -3516,13 +3517,12 @@ def test_cluster_naming_helper_normalization_and_invalid_detection() -> None:
         _normalize_cluster_name_text,
     )
 
-    assert _normalize_cluster_name_text('  <!-- image -->  ## "Linear   Algebra"  ') == (
-        "Linear Algebra"
-    )
+    assert _normalize_cluster_name_text(
+        '  <!-- image -->  ## "Linear   Algebra"  '
+    ) == ("Linear Algebra")
     assert _is_invalid_cluster_name("cover") is True
     assert _is_invalid_cluster_name("Page 3") is True
     assert _is_invalid_cluster_name("线性代数") is False
-
 
 
 def test_cluster_naming_helper_author_and_title_detection() -> None:
@@ -3538,7 +3538,6 @@ def test_cluster_naming_helper_author_and_title_detection() -> None:
     )
 
 
-
 def test_cluster_naming_helper_file_name_and_heuristic_fallbacks() -> None:
     from dite.core.clusterer import (
         _fallback_name_from_file_name,
@@ -3547,11 +3546,13 @@ def test_cluster_naming_helper_file_name_and_heuristic_fallbacks() -> None:
 
     assert _fallback_name_from_file_name("linear-algebra (1).pdf") == "linear algebra"
     assert _fallback_name_from_file_name("scan.pdf") == ""
-    assert _heuristic_cluster_name(
-        ["   ", "\n\n"],
-        ["linear-algebra-notes.pdf", "scan.png"],
-    ) == "linear algebra notes"
-
+    assert (
+        _heuristic_cluster_name(
+            ["   ", "\n\n"],
+            ["linear-algebra-notes.pdf", "scan.png"],
+        )
+        == "linear algebra notes"
+    )
 
 
 def test_cluster_naming_helper_debug_tokens_and_labels_roll_over() -> None:
@@ -3567,7 +3568,6 @@ def test_cluster_naming_helper_debug_tokens_and_labels_roll_over() -> None:
     }
 
 
-
 def test_cluster_naming_helper_builds_zh_file_name_only_prompt() -> None:
     from dite.core.clusterer import _build_cluster_naming_prompt
 
@@ -3581,8 +3581,9 @@ def test_cluster_naming_helper_builds_zh_file_name_only_prompt() -> None:
     assert "请用2-4个中文词为这个类别命名。" in prompt
 
 
-
-def test_cluster_naming_helper_compact_sample_uses_file_name_when_title_missing() -> None:
+def test_cluster_naming_helper_compact_sample_uses_file_name_when_title_missing() -> (
+    None
+):
     from dite.core.clusterer import _compact_sample_for_naming
 
     set_locale("en")

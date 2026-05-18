@@ -130,7 +130,9 @@ class Config:
 
     api: APIConfig = field(default_factory=APIConfig)
     models: ModelsConfig = field(default_factory=ModelsConfig)
-    request_profiles: RequestProfilesConfig = field(default_factory=RequestProfilesConfig)
+    request_profiles: RequestProfilesConfig = field(
+        default_factory=RequestProfilesConfig
+    )
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     processing: ProcessingConfig = field(default_factory=ProcessingConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)

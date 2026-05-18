@@ -15,7 +15,7 @@ VLM_CACHE_VERSION = 2  # v2: 多页提取（10页）
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     """将 sqlite3.Row 转换为字典，方便使用 .get() 方法"""
-    return dict(zip(row.keys(), row))
+    return dict(zip(row.keys(), row, strict=True))
 
 
 @dataclass
@@ -126,7 +126,6 @@ class FileCache:
 
         conn.commit()
 
-
     def _enforce_size_limit(self) -> int:
         """执行缓存大小限制，返回删除的条目数。"""
         if self.max_size_bytes is None or not self.db_path.exists():
@@ -182,7 +181,13 @@ class FileCache:
         """
         conn = self._get_conn()
         cursor = conn.execute(
-            "SELECT * FROM file_cache WHERE file_path = ? ORDER BY created_at DESC LIMIT 1",
+            """
+            SELECT *
+            FROM file_cache
+            WHERE file_path = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
             (str(file_path),),
         )
         row = cursor.fetchone()
@@ -214,7 +219,13 @@ class FileCache:
         """
         conn = self._get_conn()
         cursor = conn.execute(
-            "SELECT * FROM file_cache WHERE file_hash = ? AND content_md IS NOT NULL LIMIT 1",
+            """
+            SELECT *
+            FROM file_cache
+            WHERE file_hash = ?
+              AND content_md IS NOT NULL
+            LIMIT 1
+            """,
             (file_hash,),
         )
         row = cursor.fetchone()
@@ -299,7 +310,10 @@ class FileCache:
         conn.execute(
             """
             INSERT INTO file_cache
-            (file_path, file_hash, file_mtime, content_md, vlm_content, vlm_version, embedding, model_version)
+            (
+                file_path, file_hash, file_mtime, content_md, vlm_content,
+                vlm_version, embedding, model_version
+            )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(file_path, file_hash) DO UPDATE SET
                 file_mtime = excluded.file_mtime,
@@ -416,7 +430,8 @@ class FileCache:
             file_hash: 文件哈希
 
         Returns:
-            (Markdown 内容, 来源文件路径) - 如果是去重复用，返回原始文件路径；否则返回 None
+            (Markdown 内容, 来源文件路径) - 如果是去重复用，
+            返回原始文件路径；否则返回 None
             如果缓存未命中，返回 (None, None)
         """
         # 1. 先检查路径缓存
@@ -502,13 +517,20 @@ class FileCache:
         count = cursor.fetchone()[0]
 
         conn.execute(
-            "UPDATE file_cache SET vlm_content = NULL, vlm_version = NULL, embedding = NULL"
+            """
+            UPDATE file_cache
+            SET vlm_content = NULL,
+                vlm_version = NULL,
+                embedding = NULL
+            """
         )
         conn.commit()
 
         return count
 
-    def get_stats(self, required_embedding_version: str | None = None) -> dict[str, Any]:
+    def get_stats(
+        self, required_embedding_version: str | None = None
+    ) -> dict[str, Any]:
         """
         获取缓存统计信息
 

@@ -169,7 +169,8 @@ def test_analyze_and_build_payload_combines_steps(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "dite.core.analyzer.build_weighted_payload",
-        lambda analysis, raw_content: f"payload::{analysis.content.topic}::{raw_content}",
+        lambda analysis,
+        raw_content: f"payload::{analysis.content.topic}::{raw_content}",
     )
 
     analysis, payload = analyze_and_build_payload(

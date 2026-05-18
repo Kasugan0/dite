@@ -86,7 +86,9 @@ def test_extract_pdf_with_vlm_sampling_propagates_render_error(
     sampling = extract_pdf_with_vlm_sampling(file_path, _FakeClient([]), config=cfg)
 
     assert sampling.result.success is False
-    assert sampling.result.error == "pdf2image is not installed, cannot use VLM fallback"
+    assert (
+        sampling.result.error == "pdf2image is not installed, cannot use VLM fallback"
+    )
     assert sampling.api_page_calls == 0
     assert sampling.sample_page_limit == 10
 

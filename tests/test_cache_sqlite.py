@@ -20,7 +20,9 @@ def test_update_vlm_content_upsert_inserts_when_missing(tmp_path: Path) -> None:
         vlm_version=2,
     )
 
-    assert cache.get_vlm_content(file_path, "hash-1", required_version=2) == "vlm result"
+    assert (
+        cache.get_vlm_content(file_path, "hash-1", required_version=2) == "vlm result"
+    )
     cache.close()
 
 
@@ -135,11 +137,14 @@ def test_update_embedding_does_not_overwrite_content_layers(tmp_path: Path) -> N
     assert entry.content_md == "full docling content"
     assert entry.vlm_content == "vlm fallback content"
     assert entry.vlm_version == 2
-    assert cache.get_embedding(
-        file_path,
-        "hash-embedding",
-        required_model_version="embed-v2",
-    ) is not None
+    assert (
+        cache.get_embedding(
+            file_path,
+            "hash-embedding",
+            required_model_version="embed-v2",
+        )
+        is not None
+    )
     cache.close()
 
 
@@ -173,7 +178,12 @@ def test_cache_upsert_keeps_single_row_per_file_hash(tmp_path: Path) -> None:
     with sqlite3.connect(db_path) as conn:
         cursor = conn.execute(
             """
-            SELECT COUNT(*), MIN(vlm_content), MAX(vlm_content), MIN(vlm_version), MAX(vlm_version)
+            SELECT
+                COUNT(*),
+                MIN(vlm_content),
+                MAX(vlm_content),
+                MIN(vlm_version),
+                MAX(vlm_version)
             FROM file_cache
             WHERE file_path = ? AND file_hash = ?
             """,
@@ -227,11 +237,14 @@ def test_get_embedding_misses_when_model_version_changes(tmp_path: Path) -> None
         model_version="embed-v1",
     )
 
-    assert cache.get_embedding(
-        file_path,
-        "hash-model",
-        required_model_version="embed-v1",
-    ) is not None
+    assert (
+        cache.get_embedding(
+            file_path,
+            "hash-model",
+            required_model_version="embed-v1",
+        )
+        is not None
+    )
     assert (
         cache.get_embedding(
             file_path,
