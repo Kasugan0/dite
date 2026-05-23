@@ -19,6 +19,8 @@ from dite.extractors.router import (
 )
 from dite.utils.llm import format_api_error
 
+TEST_CORPUS_DIR = Path(__file__).resolve().parents[1] / "docs" / "test" / "valid"
+
 
 def make_cluster_result(
     labels: list[int] | np.ndarray | ClusterResult,
@@ -164,7 +166,7 @@ def test_scan_cli_end_to_end_with_cache(tmp_path: Path, monkeypatch) -> None:
 def test_scan_cli_reports_real_duplicate_fixture_groups_only_in_verbose(
     tmp_path: Path, monkeypatch
 ) -> None:
-    fixture_dir = Path(__file__).resolve().parents[1] / "docs" / "test"
+    fixture_dir = TEST_CORPUS_DIR
     docs = tmp_path / "docs"
     docs.mkdir()
     duplicate_names = [
@@ -650,7 +652,7 @@ def test_cache_clear_vlm_cli_clears_only_vlm_entries(
 def test_pdf_check_cli_reports_real_fixture_failure_corpus_truthfully(
     tmp_path: Path, monkeypatch
 ) -> None:
-    fixture_dir = Path(__file__).resolve().parents[1] / "docs" / "test"
+    fixture_dir = TEST_CORPUS_DIR
     docs = tmp_path / "docs"
     docs.mkdir()
     _write_test_config(tmp_path, monkeypatch)

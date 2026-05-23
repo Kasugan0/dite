@@ -19,6 +19,8 @@ from dite.extractors.docling import (
     has_docling_pdf_artifacts,
 )
 
+TEST_CORPUS_DIR = Path(__file__).resolve().parents[1] / "docs" / "test" / "valid"
+
 
 def _real_api_config_values() -> tuple[str, str, str, str, str, str]:
     """Return real API configuration values from the global config file."""
@@ -61,9 +63,9 @@ def _require_real_pdf_corpus_enabled() -> Path:
             "`uv run dite setup docling-pdf` first."
         )
 
-    corpus_dir = Path(__file__).resolve().parents[1] / "docs" / "test"
+    corpus_dir = TEST_CORPUS_DIR
     if not corpus_dir.exists():
-        pytest.skip("Missing docs/test corpus.")
+        pytest.skip("Missing docs/test/valid corpus.")
     return corpus_dir
 
 

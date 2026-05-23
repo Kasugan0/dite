@@ -45,6 +45,8 @@ from dite.utils.api_runtime import ChatCompletionResult
 from dite.utils.hashing import compute_file_hash
 from dite.utils.logging import setup_logging
 
+TEST_CORPUS_DIR = Path(__file__).resolve().parents[1] / "docs" / "test" / "valid"
+
 
 def make_cluster_result(
     labels: list[int] | np.ndarray | ClusterResult,
@@ -1792,7 +1794,7 @@ def test_extract_files_locks_down_failure_corpus_classification_baseline(
 def test_extract_files_detects_real_duplicate_group_without_cache(
     tmp_path: Path, monkeypatch
 ) -> None:
-    fixture_dir = Path(__file__).resolve().parents[1] / "docs" / "test"
+    fixture_dir = TEST_CORPUS_DIR
     duplicate_names = [
         "2506.12116v3.pdf",
         "2506.12116v3 (1).pdf",
@@ -2753,7 +2755,7 @@ def test_scan_files_excludes_target_directory(tmp_path: Path) -> None:
 
 
 def test_scan_files_real_docs_fixture_uses_supported_extensions() -> None:
-    fixture_dir = Path(__file__).resolve().parents[1] / "docs" / "test"
+    fixture_dir = TEST_CORPUS_DIR
     assert fixture_dir.exists()
 
     extensions = Config().formats.all_extensions
