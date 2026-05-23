@@ -61,6 +61,41 @@ def test_get_embedding_cache_version_tracks_input_format() -> None:
     assert get_embedding_cache_version("embed-model") == (
         "embed-model|input=filename-smart-content-normalized-v2"
     )
+    assert get_embedding_cache_version("embed-model", "content_only") == (
+        "embed-model|input=content-only-normalized-v1"
+    )
+
+
+def test_get_embeddings_content_only_omits_file_name() -> None:
+    client = _FakeClient()
+
+    get_embeddings(
+        client,
+        ["This document explains Rust ownership and borrowing."],
+        config=Config(),
+        file_names=["Rust 程序设计.pdf"],
+        embedding_model="embed-model",
+        input_mode="content_only",
+    )
+
+    request_input = client.embeddings.calls[0]["input"][0]
+    assert request_input == "This document explains Rust ownership and borrowing."
+
+
+def test_get_embeddings_content_only_falls_back_to_placeholder_for_empty_text() -> None:
+    client = _FakeClient()
+
+    get_embeddings(
+        client,
+        [""],
+        config=Config(),
+        file_names=["empty.txt"],
+        embedding_model="embed-model",
+        input_mode="content_only",
+    )
+
+    request_input = client.embeddings.calls[0]["input"][0]
+    assert request_input == "file_0"
 
 
 def test_content_truncator_keeps_head_middle_tail_within_limit() -> None:

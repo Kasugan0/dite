@@ -1,5 +1,7 @@
 """向量化模块"""
 
+from typing import Literal
+
 import numpy as np
 from openai import OpenAI
 
@@ -7,12 +9,19 @@ from dite.config import Config
 from dite.i18n import t
 from dite.utils.logging import get_logger
 
-EMBEDDING_INPUT_VERSION = "filename-smart-content-normalized-v2"
+EmbeddingInputMode = Literal["with_filename", "content_only"]
+_EMBEDDING_INPUT_VERSIONS: dict[EmbeddingInputMode, str] = {
+    "with_filename": "filename-smart-content-normalized-v2",
+    "content_only": "content-only-normalized-v1",
+}
 
 
-def get_embedding_cache_version(embedding_model: str) -> str:
+def get_embedding_cache_version(
+    embedding_model: str,
+    input_mode: EmbeddingInputMode = "with_filename",
+) -> str:
     """Return the cache key for the current embedding input format."""
-    return f"{embedding_model}|input={EMBEDDING_INPUT_VERSION}"
+    return f"{embedding_model}|input={_EMBEDDING_INPUT_VERSIONS[input_mode]}"
 
 
 def normalize_embeddings(embeddings: np.ndarray) -> np.ndarray:
@@ -39,6 +48,29 @@ def _get_file_name(file_names: list[str] | None, index: int) -> str | None:
     return file_names[index]
 
 
+def _build_embedding_input(
+    text: str,
+    file_name: str | None,
+    index: int,
+    *,
+    input_mode: EmbeddingInputMode,
+) -> tuple[str, str | None]:
+    """Build the actual embedding input and optional filename-fallback marker."""
+    stripped = text.strip() if text else ""
+    if input_mode == "with_filename":
+        if len(stripped) > 10:
+            if file_name:
+                return f"File name: {file_name}\n\nContent:\n{stripped}", None
+            return stripped, None
+
+        fallback_name = file_name or f"file_{index}"
+        return f"File name: {fallback_name}", fallback_name
+
+    if stripped:
+        return stripped, None
+    return f"file_{index}", f"file_{index}"
+
+
 def get_embeddings(
     client: OpenAI,
     texts: list[str],
@@ -46,6 +78,7 @@ def get_embeddings(
     config: Config,
     file_names: list[str] | None = None,
     embedding_model: str | None = None,
+    input_mode: EmbeddingInputMode = "with_filename",
 ) -> np.ndarray:
     """
     批量获取文本的 Embedding 向量
@@ -68,19 +101,16 @@ def get_embeddings(
     fallback_count = 0
     fallback_names: list[str] = []
     for i, text in enumerate(texts):
-        name = _get_file_name(file_names, i)
-        stripped = text.strip() if text else ""
-        if len(stripped) > 10:
-            if name:
-                valid_texts.append(f"File name: {name}\n\nContent:\n{stripped}")
-            else:
-                valid_texts.append(stripped)
-            continue
-
-        fallback_name = name or f"file_{i}"
-        valid_texts.append(f"File name: {fallback_name}")
-        fallback_count += 1
-        fallback_names.append(fallback_name)
+        built_input, fallback_name = _build_embedding_input(
+            text,
+            _get_file_name(file_names, i),
+            i,
+            input_mode=input_mode,
+        )
+        valid_texts.append(built_input)
+        if fallback_name is not None:
+            fallback_count += 1
+            fallback_names.append(fallback_name)
 
     if fallback_count > 0:
         logger.debug(
