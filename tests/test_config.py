@@ -32,6 +32,22 @@ def test_load_config_supports_markdown_extension_by_default(
     assert ".markdown" in cfg.formats.documents
 
 
+def test_load_config_uses_updated_clustering_defaults(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    cfg = load_config()
+
+    assert cfg.clustering.min_cluster_size == 3
+    assert cfg.clustering.min_samples == 2
+    assert cfg.clustering.cluster_selection_epsilon == 0.25
+    assert cfg.clustering.cluster_selection_method == "eom"
+    assert cfg.clustering.small_cluster_merge_enabled is True
+    assert cfg.clustering.small_cluster_merge_max_size == 4
+    assert cfg.clustering.small_cluster_merge_cosine_threshold == 0.92
+
+
 def test_load_config_backfills_markdown_alias_for_existing_md_configs(
     tmp_path: Path, monkeypatch
 ) -> None:

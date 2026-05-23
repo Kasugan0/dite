@@ -56,12 +56,15 @@ class RequestProfilesConfig:
 class ClusteringConfig:
     """聚类参数配置"""
 
-    min_cluster_size: int = 2
-    min_samples: int = 1
-    cluster_selection_epsilon: float = 0.0
+    min_cluster_size: int = 3
+    min_samples: int = 2
+    cluster_selection_epsilon: float = 0.25
     cluster_selection_method: str = "eom"  # "eom" 产生更大的簇，"leaf" 更细粒度
     knn_k: int = 3  # k-NN 噪音修复邻居数
     knn_distance_threshold: float | None = None
+    small_cluster_merge_enabled: bool = True
+    small_cluster_merge_max_size: int = 4
+    small_cluster_merge_cosine_threshold: float = 0.92
 
 
 @dataclass

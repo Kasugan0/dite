@@ -29,10 +29,13 @@ request_profiles:
 
 # Clustering Parameters
 clustering:
-  min_cluster_size: 2                  # Minimum cluster size
-  min_samples: 1                       # Minimum samples for core points
-  cluster_selection_epsilon: 0.0       # Cluster selection threshold
+  min_cluster_size: 3                  # Minimum cluster size
+  min_samples: 2                       # Minimum samples for core points
+  cluster_selection_epsilon: 0.25      # Cluster selection threshold
   cluster_selection_method: eom        # eom=larger clusters, leaf=fine-grained
+  small_cluster_merge_enabled: true    # Merge very small clusters into a close larger cluster
+  small_cluster_merge_max_size: 4      # Maximum cluster size eligible for merge
+  small_cluster_merge_cosine_threshold: 0.92  # Minimum centroid cosine similarity
 
 # Processing Parameters
 processing:
