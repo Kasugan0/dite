@@ -22,11 +22,12 @@ ref/
 AGENTS.md
 
 # Docs
-docs/
 doc.old/
+docs/archive/
+docs/img/
+docs/test/
 
 # DITE config
-dite.yaml
 .env
 
 # DITE cache and output
