@@ -25,6 +25,7 @@ from dite.utils.llm import format_api_error
 from dite.utils.logging import get_logger, setup_logging
 
 if TYPE_CHECKING:
+    from dite.core.clusterer import ClusterMetrics
     from dite.core.organizer import OrganizePreview
     from dite.core.pipeline import (
         ExtractionFileReport,
@@ -352,10 +353,12 @@ def _build_report(
     contents: list[str],
     labels: np.ndarray,
     cluster_names: dict[int, str],
-    noise_repaired: int = 0,
-    clusters_merged: int = 0,
+    cluster_metrics: ClusterMetrics | None = None,
 ) -> dict:
     """构建聚类报告"""
+    from dite.core.clusterer import ClusterMetrics
+
+    metrics = cluster_metrics or ClusterMetrics()
     clusters = {}
     debug_labels = _build_cluster_debug_labels(labels)
     noise = []
@@ -392,10 +395,29 @@ def _build_report(
             "num_clusters": len(clusters),
             "num_noise": len(noise),
             "num_extraction_failed": failed_count,
-            "noise_repaired": noise_repaired,
-            "clusters_merged": clusters_merged,
+            "initial_num_clusters": metrics.initial_clusters,
+            "initial_num_noise": metrics.initial_noise,
+            "noise_repaired": metrics.noise_repaired,
+            "small_clusters_merged": metrics.small_clusters_merged,
+            "name_clusters_merged": metrics.name_clusters_merged,
+            "total_clusters_merged": (
+                metrics.small_clusters_merged + metrics.name_clusters_merged
+            ),
+            "small_cluster_merge_candidates": metrics.small_cluster_merge_candidates,
+            "small_cluster_merge_skipped": metrics.small_cluster_merge_skipped,
         },
         "clusters": [clusters[label] for label in sorted(clusters)],
+        "cluster_diagnostics": {
+            "small_cluster_merge_max_similarity": (
+                metrics.small_cluster_merge_max_similarity
+            ),
+            "small_cluster_merge_events": [
+                event.__dict__.copy() for event in metrics.small_cluster_merge_events
+            ],
+            "small_cluster_skip_events": [
+                event.__dict__.copy() for event in metrics.small_cluster_skip_events
+            ],
+        },
         "noise": noise,
     }
 
@@ -416,10 +438,20 @@ def _print_report(report: dict) -> None:
             f"{t('cluster_knn_repair', count=summary['noise_repaired'])}"
         )
 
-    if summary.get("clusters_merged", 0) > 0:
+    if summary.get("small_clusters_merged", 0) > 0:
         logger.print(
             f"[bold]{t('cluster_merge_label')}[/bold] "
-            f"{t('cluster_merged', count=summary['clusters_merged'])}"
+            f"{t('cluster_small_merged', count=summary['small_clusters_merged'])}"
+        )
+    if summary.get("name_clusters_merged", 0) > 0:
+        logger.print(
+            f"[bold]{t('cluster_merge_label')}[/bold] "
+            f"{t('cluster_name_merged', count=summary['name_clusters_merged'])}"
+        )
+    if summary.get("total_clusters_merged", 0) > 0:
+        logger.print(
+            f"[bold]{t('cluster_merge_label')}[/bold] "
+            f"{t('cluster_total_merged', count=summary['total_clusters_merged'])}"
         )
 
     if summary.get("num_extraction_failed", 0) > 0:
@@ -587,9 +619,15 @@ def scan(
     logger.status(status_msg)
 
     status_msg = t("scan_naming_done")
-    if result.clusters_merged > 0:
+    if result.cluster_metrics.small_clusters_merged > 0:
+        small_merged = result.cluster_metrics.small_clusters_merged
         status_msg += (
-            f" [{t('scan_status_merged_suffix', count=result.clusters_merged)}]"
+            f" [{t('scan_status_small_merged_suffix', count=small_merged)}]"
+        )
+    if result.cluster_metrics.name_clusters_merged > 0:
+        name_merged = result.cluster_metrics.name_clusters_merged
+        status_msg += (
+            f" [{t('scan_status_name_merged_suffix', count=name_merged)}]"
         )
     logger.status(status_msg)
 
@@ -603,8 +641,7 @@ def scan(
         result.contents,
         result.labels,
         result.cluster_names,
-        result.noise_repaired,
-        result.clusters_merged,
+        result.cluster_metrics,
     )
 
     # 保存 JSON
@@ -865,8 +902,20 @@ def organize(
 
     if result.noise_repaired > 0:
         logger.debug(t("scan_status_knn_suffix", count=result.noise_repaired))
-    if result.clusters_merged > 0:
-        logger.debug(t("scan_status_merged_suffix", count=result.clusters_merged))
+    if result.cluster_metrics.small_clusters_merged > 0:
+        logger.debug(
+            t(
+                "scan_status_small_merged_suffix",
+                count=result.cluster_metrics.small_clusters_merged,
+            )
+        )
+    if result.cluster_metrics.name_clusters_merged > 0:
+        logger.debug(
+            t(
+                "scan_status_name_merged_suffix",
+                count=result.cluster_metrics.name_clusters_merged,
+            )
+        )
 
     # 关闭缓存
     if cache:

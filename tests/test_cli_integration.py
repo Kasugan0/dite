@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from dite.cache import FileCache
 from dite.cli import app
+from dite.core.clusterer import ClusterMetrics, ClusterResult
 from dite.core.pipeline import PipelineResult
 from dite.extractors.base import ExtractionResult
 from dite.extractors.router import (
@@ -17,6 +18,38 @@ from dite.extractors.router import (
     ResolvedExtraction,
 )
 from dite.utils.llm import format_api_error
+
+
+def make_cluster_result(
+    labels: list[int] | np.ndarray | ClusterResult,
+    *,
+    cluster_names: dict[int, str] | None = None,
+    repaired_mask: list[bool] | np.ndarray | None = None,
+    metrics: ClusterMetrics | None = None,
+) -> ClusterResult:
+    if isinstance(labels, ClusterResult):
+        base = labels
+        return ClusterResult(
+            labels=base.labels.copy(),
+            cluster_names=cluster_names or base.cluster_names.copy(),
+            repaired_mask=(
+                np.array(repaired_mask, dtype=bool)
+                if repaired_mask is not None
+                else base.repaired_mask.copy()
+            ),
+            metrics=metrics or ClusterMetrics(),
+        )
+    labels_array = np.array(labels, dtype=int)
+    if repaired_mask is None:
+        repaired_mask_array = np.zeros(labels_array.shape, dtype=bool)
+    else:
+        repaired_mask_array = np.array(repaired_mask, dtype=bool)
+    return ClusterResult(
+        labels=labels_array,
+        cluster_names=cluster_names or {},
+        repaired_mask=repaired_mask_array,
+        metrics=metrics or ClusterMetrics(),
+    )
 
 
 def _write_test_config(tmp_path: Path, monkeypatch) -> Path:
@@ -51,8 +84,15 @@ def test_scan_cli_end_to_end_with_cache(tmp_path: Path, monkeypatch) -> None:
     runner = CliRunner()
 
     def fake_get_embeddings(
-        client, texts, *, config=None, file_names=None, embedding_model=None
+        client,
+        texts,
+        *,
+        config=None,
+        file_names=None,
+        embedding_model=None,
+        input_mode=None,
     ) -> np.ndarray:
+        del input_mode
         return np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32)
 
     def fake_cluster_documents(
@@ -61,13 +101,14 @@ def test_scan_cli_end_to_end_with_cache(tmp_path: Path, monkeypatch) -> None:
         *,
         config=None,
         clustering=None,
+        allow_single_cluster=False,
         item_names=None,
     ):
-        return np.array([0, 0]), 0
+        return make_cluster_result([0, 0])
 
     def fake_generate_all_cluster_names(
         client,
-        labels: np.ndarray,
+        result,
         contents: list[str],
         files: list[Path],
         embeddings: np.ndarray | None = None,
@@ -75,7 +116,8 @@ def test_scan_cli_end_to_end_with_cache(tmp_path: Path, monkeypatch) -> None:
         llm_model: str | None = None,
         config=None,
     ):
-        return labels, {0: "Cluster_A"}, 0
+        del client, contents, files, embeddings, merge_same_name, llm_model, config
+        return make_cluster_result(result, cluster_names={0: "Cluster_A"})
 
     monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
     monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
@@ -185,9 +227,15 @@ def test_scan_cli_reports_real_duplicate_fixture_groups_only_in_verbose(
         )
 
     def fake_get_embeddings(
-        client, texts, *, config=None, file_names=None, embedding_model=None
+        client,
+        texts,
+        *,
+        config=None,
+        file_names=None,
+        embedding_model=None,
+        input_mode=None,
     ) -> np.ndarray:
-        del client, texts, file_names, embedding_model
+        del client, texts, file_names, embedding_model, input_mode
         return np.array(
             [[0.1, 0.2], [0.1, 0.2], [0.1, 0.2]],
             dtype=np.float32,
@@ -199,14 +247,15 @@ def test_scan_cli_reports_real_duplicate_fixture_groups_only_in_verbose(
         *,
         config=None,
         clustering=None,
+        allow_single_cluster=False,
         item_names=None,
     ):
-        del embeddings, repair_noise, clustering, item_names
-        return np.array([0, 0, 0]), 0
+        del embeddings, repair_noise, clustering, allow_single_cluster, item_names
+        return make_cluster_result([0, 0, 0])
 
     def fake_generate_all_cluster_names(
         client,
-        labels: np.ndarray,
+        result,
         contents: list[str],
         files: list[Path],
         embeddings: np.ndarray | None = None,
@@ -215,7 +264,7 @@ def test_scan_cli_reports_real_duplicate_fixture_groups_only_in_verbose(
         config=None,
     ):
         del client, contents, files, embeddings, merge_same_name, llm_model, config
-        return labels, {0: "Duplicate Papers"}, 0
+        return make_cluster_result(result, cluster_names={0: "Duplicate Papers"})
 
     monkeypatch.setattr(
         "dite.core.pipeline.resolve_document_extraction",
@@ -437,6 +486,11 @@ def test_scan_cli_report_keeps_duplicate_aliases_in_same_cluster(
             cluster_names={0: "Duplicate Papers"},
             noise_repaired=0,
             clusters_merged=0,
+            cluster_metrics=ClusterMetrics(
+                initial_clusters=1,
+                small_cluster_merge_events=[],
+                small_cluster_skip_events=[],
+            ),
         )
 
     monkeypatch.setattr("dite.core.pipeline.PipelineService.run", fake_run)
@@ -449,8 +503,18 @@ def test_scan_cli_report_keeps_duplicate_aliases_in_same_cluster(
     assert result.exit_code == 0
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["summary"]["total_files"] == 2
+    assert report["summary"]["initial_num_clusters"] == 1
     assert report["summary"]["num_clusters"] == 1
     assert report["summary"]["num_noise"] == 0
+    assert report["summary"]["small_clusters_merged"] == 0
+    assert report["summary"]["name_clusters_merged"] == 0
+    assert report["summary"]["total_clusters_merged"] == 0
+    assert report["summary"]["initial_num_noise"] == 0
+    assert report["summary"]["small_cluster_merge_candidates"] == 0
+    assert report["summary"]["small_cluster_merge_skipped"] == 0
+    assert report["cluster_diagnostics"]["small_cluster_merge_events"] == []
+    assert report["cluster_diagnostics"]["small_cluster_skip_events"] == []
+    assert report["cluster_diagnostics"]["small_cluster_merge_max_similarity"] is None
     assert report["clusters"][0]["name"] == "Duplicate Papers"
     assert {file["name"] for file in report["clusters"][0]["files"]} == {
         "paper.txt",
@@ -483,6 +547,7 @@ def test_organize_cli_script_moves_duplicate_aliases_to_same_cluster(
             cluster_names={0: "Duplicate Papers"},
             noise_repaired=0,
             clusters_merged=0,
+            cluster_metrics=ClusterMetrics(initial_clusters=1),
         )
 
     monkeypatch.setattr("dite.core.pipeline.PipelineService.run", fake_run)
@@ -521,6 +586,7 @@ def test_organize_cli_output_script_generates_shell_script(
             cluster_names={0: "Research Notes"},
             noise_repaired=0,
             clusters_merged=0,
+            cluster_metrics=ClusterMetrics(initial_clusters=1),
         )
 
     monkeypatch.setattr("dite.core.pipeline.PipelineService.run", fake_run)

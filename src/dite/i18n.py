@@ -34,7 +34,8 @@ class Messages:
     scan_naming_done: str
     scan_report_saved: str
     scan_status_knn_suffix: str
-    scan_status_merged_suffix: str
+    scan_status_small_merged_suffix: str
+    scan_status_name_merged_suffix: str
     pdf_check_description: str
     pdf_check_no_pdfs: str
     pdf_check_found_pdfs: str
@@ -92,7 +93,9 @@ class Messages:
     cluster_knn_label: str
     cluster_merge_label: str
     cluster_knn_repair: str
-    cluster_merged: str
+    cluster_small_merged: str
+    cluster_name_merged: str
+    cluster_total_merged: str
     cluster_extraction_failed: str
     cluster_uncategorized: str
     cluster_default_name: str
@@ -246,6 +249,9 @@ class Messages:
     debug_cluster_knn_assignment: str
     debug_cluster_knn_kept: str
     debug_cluster_knn_summary: str
+    debug_cluster_small_merge_event: str
+    debug_cluster_small_merge_skipped: str
+    debug_cluster_small_merge_summary: str
     debug_cluster_name_empty_response: str
     debug_cluster_name_retry: str
     debug_cluster_name_empty_fallback: str
@@ -294,7 +300,8 @@ ZH_CN = Messages(
     scan_naming_done="簇命名完成",
     scan_report_saved="报告已保存: {path}",
     scan_status_knn_suffix="噪音修复: {count}",
-    scan_status_merged_suffix="已合并: {count}",
+    scan_status_small_merged_suffix="小簇合并: {count}",
+    scan_status_name_merged_suffix="同名合并: {count}",
     pdf_check_description="快速检查 PDF 最终提取结果是否足够可用，不做全文完整性审计",
     pdf_check_no_pdfs="未找到 PDF 文件",
     pdf_check_found_pdfs="找到 {count} 个 PDF 文件",
@@ -363,7 +370,9 @@ ZH_CN = Messages(
     cluster_knn_label="噪音修复:",
     cluster_merge_label="合并:",
     cluster_knn_repair="{count} 个噪音点已归类",
-    cluster_merged="{count} 个同名簇已合并",
+    cluster_small_merged="{count} 个小簇已合并",
+    cluster_name_merged="{count} 个同名簇已合并",
+    cluster_total_merged="总计合并 {count} 个簇",
     cluster_extraction_failed="内容提取失败: {count}",
     cluster_uncategorized="未分类",
     cluster_default_name="簇_{label}",
@@ -548,6 +557,17 @@ ZH_CN = Messages(
         "threshold={threshold:.4f})"
     ),
     debug_cluster_knn_summary=("k-NN 修复了 {repaired} 个噪音点，保留 {kept} 个噪音点"),
+    debug_cluster_small_merge_event=(
+        "  小簇 {source} (size={source_size}) -> 簇 {target} "
+        "(target_size={target_size}, similarity={similarity:.4f})"
+    ),
+    debug_cluster_small_merge_skipped=(
+        "  小簇 {source} (size={source_size}) 跳过，最佳目标 {target} "
+        "(target_size={target_size}, similarity={similarity:.4f}, reason={reason})"
+    ),
+    debug_cluster_small_merge_summary=(
+        "小簇再合并: candidates={candidates}, merged={merged}, skipped={skipped}"
+    ),
     debug_cluster_name_empty_response=(
         "簇命名响应为空: model={model}, finish_reason={finish_reason}, "
         "reasoning_chars={reasoning_chars}"
@@ -606,7 +626,8 @@ EN = Messages(
     scan_naming_done="Cluster naming completed",
     scan_report_saved="Report saved: {path}",
     scan_status_knn_suffix="Noise repaired: {count}",
-    scan_status_merged_suffix="Merged: {count}",
+    scan_status_small_merged_suffix="Small-cluster merged: {count}",
+    scan_status_name_merged_suffix="Same-name merged: {count}",
     pdf_check_description=(
         "Quickly check whether final PDF extraction output is usable; "
         "this is not a full-document completeness audit"
@@ -679,7 +700,9 @@ EN = Messages(
     cluster_knn_label="Noise repair:",
     cluster_merge_label="Merge:",
     cluster_knn_repair="{count} noise points repaired",
-    cluster_merged="{count} same-name clusters merged",
+    cluster_small_merged="{count} small clusters merged",
+    cluster_name_merged="{count} same-name clusters merged",
+    cluster_total_merged="{count} clusters merged in total",
     cluster_extraction_failed="Extraction failed: {count}",
     cluster_uncategorized="Uncategorized",
     cluster_default_name="Cluster_{label}",
@@ -880,6 +903,18 @@ EN = Messages(
     ),
     debug_cluster_knn_summary=(
         "k-NN repaired {repaired} noise points and kept {kept} as noise"
+    ),
+    debug_cluster_small_merge_event=(
+        "  Small cluster {source} (size={source_size}) -> cluster {target} "
+        "(target_size={target_size}, similarity={similarity:.4f})"
+    ),
+    debug_cluster_small_merge_skipped=(
+        "  Small cluster {source} (size={source_size}) skipped, best target {target} "
+        "(target_size={target_size}, similarity={similarity:.4f}, reason={reason})"
+    ),
+    debug_cluster_small_merge_summary=(
+        "Small-cluster merge: candidates={candidates}, merged={merged}, "
+        "skipped={skipped}"
     ),
     debug_cluster_name_empty_response=(
         "Cluster naming returned empty content: model={model}, "

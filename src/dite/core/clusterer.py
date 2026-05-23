@@ -1,8 +1,9 @@
 """聚类模块"""
 
 import concurrent.futures
+import dataclasses
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import hdbscan
@@ -281,8 +282,8 @@ class ClusterResult:
 
     labels: np.ndarray  # 每个文件的聚类标签，-1 表示噪音
     cluster_names: dict[int, str]  # 聚类标签到名称的映射
-    noise_repaired: int = 0  # k-NN 修复的噪音点数量
-    clusters_merged: int = 0  # 合并的簇数量
+    repaired_mask: np.ndarray = field(default_factory=lambda: np.array([], dtype=bool))
+    metrics: "ClusterMetrics" = field(default_factory=lambda: ClusterMetrics())
 
     @property
     def n_clusters(self) -> int:
@@ -294,6 +295,246 @@ class ClusterResult:
     def n_noise(self) -> int:
         """噪音点数量"""
         return int(np.sum(self.labels == -1))
+
+    @property
+    def noise_repaired(self) -> int:
+        """k-NN 修复的噪音点数量"""
+        return self.metrics.noise_repaired
+
+    @property
+    def small_clusters_merged(self) -> int:
+        """小簇再合并数量"""
+        return self.metrics.small_clusters_merged
+
+    @property
+    def name_clusters_merged(self) -> int:
+        """同名簇合并数量"""
+        return self.metrics.name_clusters_merged
+
+    @property
+    def total_clusters_merged(self) -> int:
+        """全部簇合并数量"""
+        return self.small_clusters_merged + self.name_clusters_merged
+
+
+@dataclass
+class ClusterMetrics:
+    """Structured clustering metrics used by pipeline and reporting layers."""
+
+    initial_clusters: int = 0
+    initial_noise: int = 0
+    noise_repaired: int = 0
+    small_clusters_merged: int = 0
+    name_clusters_merged: int = 0
+    small_cluster_merge_candidates: int = 0
+    small_cluster_merge_skipped: int = 0
+    small_cluster_merge_max_similarity: float | None = None
+    small_cluster_merge_events: list["SmallClusterMergeEvent"] = field(
+        default_factory=list
+    )
+    small_cluster_skip_events: list["SmallClusterSkipEvent"] = field(
+        default_factory=list
+    )
+
+
+@dataclass
+class SmallClusterMergeEvent:
+    """Detailed event for a successful small-cluster merge."""
+
+    source_label: int
+    source_size: int
+    target_label: int
+    target_size_before: int
+    similarity: float
+
+
+@dataclass
+class SmallClusterSkipEvent:
+    """Detailed event for a skipped small-cluster merge candidate."""
+
+    source_label: int
+    source_size: int
+    best_target_label: int | None
+    best_target_size: int | None
+    best_similarity: float | None
+    reason: str
+
+
+def _cluster_sizes(labels: np.ndarray) -> dict[int, int]:
+    """Return cluster sizes excluding noise."""
+    return {
+        int(label): int(np.sum(labels == label))
+        for label in sorted(int(label) for label in set(labels) if label != -1)
+    }
+
+
+def _cluster_centroids(
+    embeddings: np.ndarray,
+    labels: np.ndarray,
+) -> dict[int, np.ndarray]:
+    """Build normalized centroid embeddings for non-noise clusters."""
+    centroids: dict[int, np.ndarray] = {}
+    for label in sorted(int(label) for label in set(labels) if label != -1):
+        members = embeddings[labels == label]
+        centroid = normalize_embeddings(members.mean(axis=0))
+        centroids[label] = centroid
+    return centroids
+
+
+def merge_small_clusters_by_similarity(
+    embeddings: np.ndarray,
+    labels: np.ndarray,
+    *,
+    max_size: int,
+    cosine_threshold: float,
+) -> tuple[
+    np.ndarray,
+    int,
+    list[SmallClusterMergeEvent],
+    list[SmallClusterSkipEvent],
+    float | None,
+]:
+    """Merge tiny non-noise clusters into the most similar nearby cluster."""
+    logger = get_logger()
+    labels = labels.copy()
+    if max_size < 1:
+        return labels, 0, [], [], None
+
+    initial_sizes = _cluster_sizes(labels)
+    candidates = sorted(
+        (
+            (size, label)
+            for label, size in initial_sizes.items()
+            if size <= max_size
+        ),
+        key=lambda item: (item[0], item[1]),
+    )
+    debug_labels = _build_cluster_debug_labels(labels)
+
+    merged_count = 0
+    merge_events: list[SmallClusterMergeEvent] = []
+    skip_events: list[SmallClusterSkipEvent] = []
+    max_similarity_seen: float | None = None
+    for _size, source_label in candidates:
+        cluster_sizes = _cluster_sizes(labels)
+        if len(cluster_sizes) < 2:
+            break
+        if source_label not in cluster_sizes:
+            continue
+        source_size = cluster_sizes[source_label]
+        if source_size > max_size:
+            continue
+
+        centroids = _cluster_centroids(embeddings, labels)
+        source_centroid = centroids[source_label]
+        best_target: int | None = None
+        best_similarity = -1.0
+        best_target_size = -1
+        for target_label, target_size in cluster_sizes.items():
+            if target_label == source_label:
+                continue
+            target_centroid = centroids[target_label]
+            similarity = float(np.dot(source_centroid, target_centroid))
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_target = target_label
+                best_target_size = target_size
+                continue
+            if similarity == best_similarity and target_size > best_target_size:
+                best_target = target_label
+                best_target_size = target_size
+                continue
+            if (
+                similarity == best_similarity
+                and target_size == best_target_size
+                and best_target is not None
+                and target_label < best_target
+            ):
+                best_target = target_label
+        if best_similarity >= 0 and (
+            max_similarity_seen is None or best_similarity > max_similarity_seen
+        ):
+            max_similarity_seen = best_similarity
+
+        if best_target is None:
+            logger.debug(
+                t(
+                    "debug_cluster_small_merge_skipped",
+                    source=debug_labels.get(source_label, str(source_label)),
+                    source_size=source_size,
+                    target="-",
+                    target_size=0,
+                    similarity=-1.0,
+                    reason="no_target_cluster",
+                )
+            )
+            skip_events.append(
+                SmallClusterSkipEvent(
+                    source_label=source_label,
+                    source_size=source_size,
+                    best_target_label=None,
+                    best_target_size=None,
+                    best_similarity=None,
+                    reason="no_target_cluster",
+                )
+            )
+            continue
+        if best_similarity < cosine_threshold:
+            logger.debug(
+                t(
+                    "debug_cluster_small_merge_skipped",
+                    source=debug_labels.get(source_label, str(source_label)),
+                    source_size=source_size,
+                    target=debug_labels.get(best_target, str(best_target)),
+                    target_size=best_target_size,
+                    similarity=best_similarity,
+                    reason="below_similarity_threshold",
+                )
+            )
+            skip_events.append(
+                SmallClusterSkipEvent(
+                    source_label=source_label,
+                    source_size=source_size,
+                    best_target_label=best_target,
+                    best_target_size=best_target_size,
+                    best_similarity=best_similarity,
+                    reason="below_similarity_threshold",
+                )
+            )
+            continue
+
+        target_size_before = cluster_sizes[best_target]
+        logger.debug(
+            t(
+                "debug_cluster_small_merge_event",
+                source=debug_labels.get(source_label, str(source_label)),
+                source_size=source_size,
+                target=debug_labels.get(best_target, str(best_target)),
+                target_size=target_size_before,
+                similarity=best_similarity,
+            )
+        )
+        labels[labels == source_label] = best_target
+        merged_count += 1
+        merge_events.append(
+            SmallClusterMergeEvent(
+                source_label=source_label,
+                source_size=source_size,
+                target_label=best_target,
+                target_size_before=target_size_before,
+                similarity=best_similarity,
+            )
+        )
+
+    logger.debug(
+        t(
+            "debug_cluster_small_merge_summary",
+            candidates=len(candidates),
+            merged=merged_count,
+            skipped=len(skip_events),
+        )
+    )
+    return labels, merged_count, merge_events, skip_events, max_similarity_seen
 
 
 def repair_noise_with_knn(
@@ -461,8 +702,9 @@ def cluster_documents(
     knn_k: int | None = None,
     knn_distance_threshold: float | None = None,
     clustering: ClusteringConfig | None = None,
+    allow_single_cluster: bool = False,
     item_names: list[str] | None = None,
-) -> tuple[np.ndarray, int]:
+) -> ClusterResult:
     """
     使用 HDBSCAN 对文档进行聚类，可选 k-NN 噪音修复
 
@@ -473,31 +715,8 @@ def cluster_documents(
         knn_distance_threshold: 距离阈值（None 时使用配置值）
 
     Returns:
-        聚类标签数组和修复的噪音点数量
+        完整聚类结果对象
     """
-    labels, repaired_count, _repaired_mask = cluster_documents_with_repair_mask(
-        embeddings,
-        config=config,
-        repair_noise=repair_noise,
-        knn_k=knn_k,
-        knn_distance_threshold=knn_distance_threshold,
-        clustering=clustering,
-        item_names=item_names,
-    )
-    return labels, repaired_count
-
-
-def cluster_documents_with_repair_mask(
-    embeddings: np.ndarray,
-    *,
-    config: Config,
-    repair_noise: bool = True,
-    knn_k: int | None = None,
-    knn_distance_threshold: float | None = None,
-    clustering: ClusteringConfig | None = None,
-    item_names: list[str] | None = None,
-) -> tuple[np.ndarray, int, np.ndarray]:
-    """Cluster documents and report which input rows were noise-repaired."""
     logger = get_logger()
     clustering_cfg = clustering or config.clustering
     embeddings = normalize_embeddings(embeddings)
@@ -540,7 +759,12 @@ def cluster_documents_with_repair_mask(
 
     if embeddings.shape[0] < clustering_cfg.min_cluster_size:
         labels = np.full(embeddings.shape[0], -1, dtype=int)
-        return labels, 0, np.zeros(labels.shape, dtype=bool)
+        return ClusterResult(
+            labels=labels,
+            cluster_names={},
+            repaired_mask=np.zeros(labels.shape, dtype=bool),
+            metrics=ClusterMetrics(initial_noise=int(labels.size)),
+        )
 
     clusterer = hdbscan.HDBSCAN(
         min_cluster_size=clustering_cfg.min_cluster_size,
@@ -548,18 +772,17 @@ def cluster_documents_with_repair_mask(
         cluster_selection_epsilon=clustering_cfg.cluster_selection_epsilon,
         metric="euclidean",
         cluster_selection_method=clustering_cfg.cluster_selection_method,
+        allow_single_cluster=allow_single_cluster,
     )
     labels = clusterer.fit_predict(embeddings)
 
-    # 输出初始聚类结果
     unique_labels = set(labels)
     n_clusters = len([lbl for lbl in unique_labels if lbl != -1])
     n_noise = int(np.sum(labels == -1))
     logger.debug(t("debug_cluster_initial_result", clusters=n_clusters, noise=n_noise))
+    metrics = ClusterMetrics(initial_clusters=n_clusters, initial_noise=n_noise)
 
     debug_labels = _build_cluster_debug_labels(labels)
-
-    # 输出各簇大小（使用大写字母标识，避免与数字混淆）
     if n_clusters > 0:
         cluster_sizes = []
         for lbl in sorted(lbl for lbl in unique_labels if lbl != -1):
@@ -567,7 +790,6 @@ def cluster_documents_with_repair_mask(
             cluster_sizes.append(f"{debug_labels[int(lbl)]}:{size}")
         logger.debug(t("debug_cluster_sizes", sizes=", ".join(cluster_sizes)))
 
-    # k-NN 噪音修复
     repaired_count = 0
     repaired_mask = np.zeros(labels.shape, dtype=bool)
     if repair_noise:
@@ -587,8 +809,37 @@ def cluster_documents_with_repair_mask(
                 item_names=item_names,
             )
         repaired_mask = (before_repair == -1) & (labels != -1)
+    metrics.noise_repaired = repaired_count
 
-    return labels, repaired_count, repaired_mask
+    if clustering_cfg.small_cluster_merge_enabled:
+        labels_before_small_merge = labels.copy()
+        (
+            labels,
+            metrics.small_clusters_merged,
+            metrics.small_cluster_merge_events,
+            metrics.small_cluster_skip_events,
+            metrics.small_cluster_merge_max_similarity,
+        ) = merge_small_clusters_by_similarity(
+            embeddings,
+            labels,
+            max_size=clustering_cfg.small_cluster_merge_max_size,
+            cosine_threshold=clustering_cfg.small_cluster_merge_cosine_threshold,
+        )
+        metrics.small_cluster_merge_candidates = int(
+            sum(
+                1
+                for size in _cluster_sizes(labels_before_small_merge).values()
+                if size <= clustering_cfg.small_cluster_merge_max_size
+            )
+        )
+        metrics.small_cluster_merge_skipped = len(metrics.small_cluster_skip_events)
+
+    return ClusterResult(
+        labels=labels,
+        cluster_names={},
+        repaired_mask=repaired_mask,
+        metrics=metrics,
+    )
 
 
 def generate_cluster_name(
@@ -748,7 +999,7 @@ def merge_clusters_by_name(
 
 def generate_all_cluster_names(
     client: OpenAI,
-    labels: np.ndarray,
+    result: ClusterResult,
     contents: list[str],
     files: list[Path],
     *,
@@ -757,25 +1008,31 @@ def generate_all_cluster_names(
     merge_same_name: bool = True,
     llm_model: str | None = None,
     request_runtime: AsyncRequestRuntime | None = None,
-) -> tuple[np.ndarray, dict[int, str], int]:
+) -> ClusterResult:
     """
     为所有簇生成名称，并可选合并同名簇
 
     Args:
         client: OpenAI 兼容客户端
-        labels: 聚类标签数组
+        result: 聚类结果对象
         contents: 文档内容列表
         files: 文件路径列表
         embeddings: 向量矩阵（用于选择代表性文件）
         merge_same_name: 是否合并同名簇
 
     Returns:
-        (可能修改后的标签, 标签到名称的映射, 合并的簇数量)
+        更新后的聚类结果对象
     """
+    labels = result.labels
     cluster_labels = sorted(int(label) for label in set(labels) if label != -1)
     cluster_names: dict[int, str] = {}
     if not cluster_labels:
-        return labels, cluster_names, 0
+        return ClusterResult(
+            labels=labels.copy(),
+            cluster_names={},
+            repaired_mask=result.repaired_mask.copy(),
+            metrics=dataclasses.replace(result.metrics),
+        )
 
     debug_labels = _build_cluster_debug_labels(labels)
     cluster_indices_by_label = {label: [] for label in cluster_labels}
@@ -921,9 +1178,19 @@ def generate_all_cluster_names(
         )
 
     merged_count = 0
+    updated_labels = labels.copy()
+    updated_names = cluster_names
     if merge_same_name:
-        labels, cluster_names, merged_count = merge_clusters_by_name(
+        updated_labels, updated_names, merged_count = merge_clusters_by_name(
             labels, cluster_names
         )
-
-    return labels, cluster_names, merged_count
+    updated_metrics = dataclasses.replace(
+        result.metrics,
+        name_clusters_merged=merged_count,
+    )
+    return ClusterResult(
+        labels=updated_labels,
+        cluster_names=updated_names,
+        repaired_mask=result.repaired_mask.copy(),
+        metrics=updated_metrics,
+    )

@@ -306,6 +306,19 @@ def test_dite_scan_reports_brief_summary_by_default_and_details_in_verbose(
     assert "vlm_page_calls=6" in verbose_result.output
 
 
+def test_dite_cluster_ab_command_is_removed(tmp_path: Path, monkeypatch) -> None:
+    runner = CliRunner()
+    _write_test_config(tmp_path, monkeypatch)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "alpha.txt").write_text("alpha topic notes", encoding="utf-8")
+
+    result = runner.invoke(app, ["cluster-ab", str(docs)])
+
+    assert result.exit_code != 0
+    assert "No such command 'cluster-ab'" in result.output
+
+
 def test_dite_scan_verbose_does_not_leak_internal_profile_codes(
     tmp_path: Path, monkeypatch
 ) -> None:

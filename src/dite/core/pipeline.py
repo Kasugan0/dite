@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 from openai import OpenAI
+from sklearn.decomposition import PCA
 
 from dite.cache import VLM_CACHE_VERSION, FileCache
 from dite.config import Config
@@ -29,9 +30,9 @@ from dite.utils.hashing import compute_file_hash
 from dite.utils.logging import get_logger
 
 from .clusterer import (
-    cluster_documents_with_repair_mask as cluster_documents,
-)
-from .clusterer import (
+    ClusterMetrics,
+    ClusterResult,
+    cluster_documents,
     generate_all_cluster_names,
 )
 from .embedder import (
@@ -52,6 +53,9 @@ class PipelineOptions:
     repair_noise: bool = True
     merge_same_name: bool = False
     allow_vlm_api: bool = True
+    embedding_input_mode: str = "with_filename"
+    cluster_allow_single_cluster: bool = False
+    cluster_pca_components: int | None = None
     exclude_paths: list[Path] = field(default_factory=list)
 
 
@@ -66,6 +70,7 @@ class PipelineResult:
     cluster_names: dict[int, str]
     noise_repaired: int = 0
     clusters_merged: int = 0
+    cluster_metrics: ClusterMetrics = field(default_factory=lambda: ClusterMetrics())
     extraction: "ExtractionSummary" = field(default_factory=lambda: ExtractionSummary())
     file_reports: list["ExtractionFileReport"] = field(default_factory=list)
 
@@ -452,12 +457,10 @@ class PipelineService:
                 canonical_contents,
                 options,
             )
-            canonical_labels, canonical_repaired_mask = (
-                self._cluster_canonical_documents(
-                    canonical_embeddings,
-                    options,
-                    [file.name for file in canonical_files],
-                )
+            cluster_result = self._cluster_canonical_documents(
+                canonical_embeddings,
+                options,
+                [file.name for file in canonical_files],
             )
             embeddings = self._expand_by_file_hashes(
                 canonical_indices,
@@ -467,7 +470,7 @@ class PipelineService:
             )
             noise_repaired = self._expand_noise_repaired_count(
                 canonical_indices,
-                canonical_repaired_mask,
+                cluster_result.repaired_mask,
                 file_hashes,
             )
             naming_kwargs = {
@@ -480,18 +483,16 @@ class PipelineService:
                 generate_all_cluster_names, "request_runtime"
             ):
                 naming_kwargs["request_runtime"] = request_runtime
-            canonical_labels, cluster_names, clusters_merged = (
-                generate_all_cluster_names(
-                    self.client,
-                    canonical_labels,
-                    canonical_contents,
-                    canonical_files,
-                    **naming_kwargs,
-                )
+            cluster_result = generate_all_cluster_names(
+                self.client,
+                cluster_result,
+                canonical_contents,
+                canonical_files,
+                **naming_kwargs,
             )
             labels = self._expand_by_file_hashes(
                 canonical_indices,
-                canonical_labels,
+                cluster_result.labels,
                 file_hashes,
                 len(files),
             )
@@ -501,9 +502,10 @@ class PipelineService:
             contents=contents,
             embeddings=embeddings,
             labels=labels,
-            cluster_names=cluster_names,
+            cluster_names=cluster_result.cluster_names,
             noise_repaired=noise_repaired,
-            clusters_merged=clusters_merged,
+            clusters_merged=cluster_result.total_clusters_merged,
+            cluster_metrics=cluster_result.metrics,
             extraction=extraction,
             file_reports=file_reports,
         )
@@ -513,23 +515,28 @@ class PipelineService:
         embeddings: np.ndarray,
         options: PipelineOptions,
         item_names: list[str],
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> ClusterResult:
+        cluster_inputs = embeddings
+        if options.cluster_pca_components is not None:
+            pca_components = min(
+                options.cluster_pca_components,
+                embeddings.shape[0],
+                embeddings.shape[1],
+            )
+            if pca_components >= 1:
+                cluster_inputs = PCA(
+                    n_components=pca_components,
+                    random_state=0,
+                ).fit_transform(embeddings)
         result = cluster_documents(
-            embeddings,
+            cluster_inputs,
             config=self.config,
             repair_noise=options.repair_noise,
             clustering=self.config.clustering,
+            allow_single_cluster=options.cluster_allow_single_cluster,
             item_names=item_names,
         )
-        if len(result) == 2:
-            labels, repaired_count = result
-            repaired_mask = np.zeros(labels.shape, dtype=bool)
-            if repaired_count:
-                repaired_mask = labels != -1
-            return labels, repaired_mask
-
-        labels, _repaired_count, repaired_mask = result
-        return labels, repaired_mask
+        return result
 
     def extract_files(
         self, files: list[Path], options: PipelineOptions
@@ -750,7 +757,10 @@ class PipelineService:
             need_embedding_indices: list[int] = []
             need_embedding_contents: list[str] = []
             embedding_model = self.config.models.embedding
-            cache_model_version = get_embedding_cache_version(embedding_model)
+            cache_model_version = get_embedding_cache_version(
+                embedding_model,
+                options.embedding_input_mode,
+            )
 
             for i, (file, content, file_hash) in enumerate(
                 zip(files, contents, file_hashes, strict=False)
@@ -782,6 +792,7 @@ class PipelineService:
                     config=self.config,
                     file_names=file_names,
                     embedding_model=embedding_model,
+                    input_mode=options.embedding_input_mode,
                 )
 
                 for idx, embedding in zip(
@@ -809,4 +820,5 @@ class PipelineService:
             config=self.config,
             file_names=file_names,
             embedding_model=self.config.models.embedding,
+            input_mode=options.embedding_input_mode,
         )

@@ -259,7 +259,9 @@ def test_print_report_localizes_summary_labels(capsys) -> None:
             "num_clusters": 1,
             "num_noise": 0,
             "noise_repaired": 1,
-            "clusters_merged": 1,
+            "small_clusters_merged": 1,
+            "name_clusters_merged": 1,
+            "total_clusters_merged": 2,
         },
         "clusters": [{"name": "Cluster", "files": [{"name": "a.txt"}]}],
         "noise": [],
@@ -276,7 +278,9 @@ def test_print_report_localizes_summary_labels(capsys) -> None:
 
     assert "合并:" in zh_output
     assert "Merge:" in en_output
+    assert "个小簇已合并" in zh_output
     assert "个同名簇已合并" in zh_output
+    assert "clusters merged in total" in en_output
     assert "same-name clusters merged" in en_output
 
 

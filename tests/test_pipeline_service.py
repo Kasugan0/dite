@@ -1,4 +1,5 @@
 import concurrent.futures
+import dataclasses
 import shutil
 import threading
 import time
@@ -15,7 +16,12 @@ from dite.config import (
     Config,
     RequestProfilesConfig,
 )
-from dite.core.clusterer import cluster_documents, repair_noise_with_knn
+from dite.core.clusterer import (
+    ClusterMetrics,
+    ClusterResult,
+    cluster_documents,
+    repair_noise_with_knn,
+)
 from dite.core.embedder import get_embedding_cache_version
 from dite.core.pipeline import (
     ExtractionFileReport,
@@ -38,6 +44,38 @@ from dite.i18n import set_locale
 from dite.utils.api_runtime import ChatCompletionResult
 from dite.utils.hashing import compute_file_hash
 from dite.utils.logging import setup_logging
+
+
+def make_cluster_result(
+    labels: list[int] | np.ndarray | ClusterResult,
+    *,
+    cluster_names: dict[int, str] | None = None,
+    repaired_mask: list[bool] | np.ndarray | None = None,
+    metrics: ClusterMetrics | None = None,
+) -> ClusterResult:
+    if isinstance(labels, ClusterResult):
+        base = labels
+        return ClusterResult(
+            labels=base.labels.copy(),
+            cluster_names=cluster_names or base.cluster_names.copy(),
+            repaired_mask=(
+                np.array(repaired_mask, dtype=bool)
+                if repaired_mask is not None
+                else base.repaired_mask.copy()
+            ),
+            metrics=metrics or dataclasses.replace(base.metrics),
+        )
+    labels_array = np.array(labels, dtype=int)
+    if repaired_mask is None:
+        repaired_mask_array = np.zeros(labels_array.shape, dtype=bool)
+    else:
+        repaired_mask_array = np.array(repaired_mask, dtype=bool)
+    return ClusterResult(
+        labels=labels_array,
+        cluster_names=cluster_names or {},
+        repaired_mask=repaired_mask_array,
+        metrics=metrics or ClusterMetrics(),
+    )
 
 
 def test_pipeline_reuses_vlm_cache_across_runs(tmp_path: Path, monkeypatch) -> None:
@@ -80,8 +118,15 @@ def test_pipeline_reuses_vlm_cache_across_runs(tmp_path: Path, monkeypatch) -> N
         )
 
     def fake_get_embeddings(
-        client, texts, *, config=None, file_names=None, embedding_model=None
+        client,
+        texts,
+        *,
+        config=None,
+        file_names=None,
+        embedding_model=None,
+        input_mode=None,
     ) -> np.ndarray:
+        del input_mode
         call_count["emb"] += 1
         return np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
 
@@ -91,13 +136,14 @@ def test_pipeline_reuses_vlm_cache_across_runs(tmp_path: Path, monkeypatch) -> N
         *,
         config=None,
         clustering=None,
+        allow_single_cluster=False,
         item_names=None,
     ):
-        return np.array([0]), 0
+        return make_cluster_result([0])
 
     def fake_generate_all_cluster_names(
         client,
-        labels: np.ndarray,
+        result,
         contents: list[str],
         files: list[Path],
         embeddings: np.ndarray | None = None,
@@ -105,7 +151,11 @@ def test_pipeline_reuses_vlm_cache_across_runs(tmp_path: Path, monkeypatch) -> N
         llm_model: str | None = None,
         config: Config | None = None,
     ):
-        return labels, {0: "Cluster_A"}, 0
+        return make_cluster_result(
+            result,
+            cluster_names={0: "Cluster_A"},
+            metrics=ClusterMetrics(),
+        )
 
     monkeypatch.setattr(
         PipelineService,
@@ -666,8 +716,15 @@ def test_pipeline_reuses_vlm_cache_by_hash_across_paths(
         return file_path.suffix.lower() == ".pdf"
 
     def fake_get_embeddings(
-        client, texts, *, config=None, file_names=None, embedding_model=None
+        client,
+        texts,
+        *,
+        config=None,
+        file_names=None,
+        embedding_model=None,
+        input_mode=None,
     ) -> np.ndarray:
+        del input_mode
         call_count["emb"] += 1
         captured["texts"] = texts
         captured["file_names"] = file_names
@@ -679,13 +736,14 @@ def test_pipeline_reuses_vlm_cache_by_hash_across_paths(
         *,
         config=None,
         clustering=None,
+        allow_single_cluster=False,
         item_names=None,
     ):
-        return np.array([0]), 0
+        return make_cluster_result([0])
 
     def fake_generate_all_cluster_names(
         client,
-        labels: np.ndarray,
+        result,
         contents: list[str],
         files: list[Path],
         embeddings: np.ndarray | None = None,
@@ -693,7 +751,11 @@ def test_pipeline_reuses_vlm_cache_by_hash_across_paths(
         llm_model: str | None = None,
         config: Config | None = None,
     ):
-        return labels, {0: "Cluster_A"}, 0
+        return make_cluster_result(
+            result,
+            cluster_names={0: "Cluster_A"},
+            metrics=ClusterMetrics(),
+        )
 
     monkeypatch.setattr(
         PipelineService,
@@ -777,8 +839,15 @@ def test_pipeline_prefers_vlm_when_docling_content_is_glyph_noise(
         )
 
     def fake_get_embeddings(
-        client, texts, *, config=None, file_names=None, embedding_model=None
+        client,
+        texts,
+        *,
+        config=None,
+        file_names=None,
+        embedding_model=None,
+        input_mode=None,
     ) -> np.ndarray:
+        del input_mode
         captured["texts"] = texts
         return np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
 
@@ -788,13 +857,14 @@ def test_pipeline_prefers_vlm_when_docling_content_is_glyph_noise(
         *,
         config=None,
         clustering=None,
+        allow_single_cluster=False,
         item_names=None,
     ):
-        return np.array([0]), 0
+        return make_cluster_result([0])
 
     def fake_generate_all_cluster_names(
         client,
-        labels: np.ndarray,
+        result,
         contents: list[str],
         files: list[Path],
         embeddings: np.ndarray | None = None,
@@ -802,7 +872,11 @@ def test_pipeline_prefers_vlm_when_docling_content_is_glyph_noise(
         llm_model: str | None = None,
         config: Config | None = None,
     ):
-        return labels, {0: "Cluster_A"}, 0
+        return make_cluster_result(
+            result,
+            cluster_names={0: "Cluster_A"},
+            metrics=ClusterMetrics(),
+        )
 
     monkeypatch.setattr(
         PipelineService,
@@ -1116,8 +1190,15 @@ def test_pipeline_real_scan_extract_and_cache_hits(tmp_path: Path, monkeypatch) 
     service = PipelineService(client=object(), config=config, cache=cache)
 
     def fake_get_embeddings(
-        client, texts, *, config=None, file_names=None, embedding_model=None
+        client,
+        texts,
+        *,
+        config=None,
+        file_names=None,
+        embedding_model=None,
+        input_mode=None,
     ) -> np.ndarray:
+        del input_mode
         return np.array([[0.1, 0.2], [0.1, 0.2]], dtype=np.float32)
 
     def fake_cluster_documents(
@@ -1126,13 +1207,14 @@ def test_pipeline_real_scan_extract_and_cache_hits(tmp_path: Path, monkeypatch) 
         *,
         config=None,
         clustering=None,
+        allow_single_cluster=False,
         item_names=None,
     ):
-        return np.array([0, 0]), 0
+        return make_cluster_result([0, 0])
 
     def fake_generate_all_cluster_names(
         client,
-        labels: np.ndarray,
+        result,
         contents: list[str],
         files: list[Path],
         embeddings: np.ndarray | None = None,
@@ -1140,7 +1222,11 @@ def test_pipeline_real_scan_extract_and_cache_hits(tmp_path: Path, monkeypatch) 
         llm_model: str | None = None,
         config: Config | None = None,
     ):
-        return labels, {0: "Cluster_A"}, 0
+        return make_cluster_result(
+            result,
+            cluster_names={0: "Cluster_A"},
+            metrics=ClusterMetrics(),
+        )
 
     monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
     monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
@@ -1240,9 +1326,15 @@ def test_pipeline_deduplicates_same_hash_before_vlm_embedding_and_clustering(
         )
 
     def fake_get_embeddings(
-        client, texts, *, config=None, file_names=None, embedding_model=None
+        client,
+        texts,
+        *,
+        config=None,
+        file_names=None,
+        embedding_model=None,
+        input_mode=None,
     ) -> np.ndarray:
-        del client, config, embedding_model
+        del client, config, embedding_model, input_mode
         calls["embedding"] += 1
         assert texts == ["canonical summary for paper (1).pdf"]
         assert file_names == ["paper (1).pdf"]
@@ -1254,16 +1346,17 @@ def test_pipeline_deduplicates_same_hash_before_vlm_embedding_and_clustering(
         *,
         config=None,
         clustering=None,
+        allow_single_cluster=False,
         item_names=None,
     ):
         calls["cluster"] += 1
         assert embeddings.shape == (1, 2)
         assert item_names == ["paper (1).pdf"]
-        return np.array([0]), 0
+        return make_cluster_result([0])
 
     def fake_generate_all_cluster_names(
         client,
-        labels: np.ndarray,
+        result,
         contents: list[str],
         files: list[Path],
         embeddings: np.ndarray | None = None,
@@ -1272,10 +1365,10 @@ def test_pipeline_deduplicates_same_hash_before_vlm_embedding_and_clustering(
         config: Config | None = None,
     ):
         del client, embeddings, merge_same_name, llm_model, config
-        assert labels.tolist() == [0]
+        assert result.labels.tolist() == [0]
         assert contents == ["canonical summary for paper (1).pdf"]
         assert files == [docs[1]]
-        return labels, {0: "Duplicate Papers"}, 0
+        return make_cluster_result(result, cluster_names={0: "Duplicate Papers"})
 
     monkeypatch.setattr(
         PipelineService,
@@ -1345,19 +1438,20 @@ def test_pipeline_reuses_hash_cached_embedding_for_duplicate_canonical(
         *,
         config=None,
         clustering=None,
+        allow_single_cluster=False,
         item_names=None,
     ):
-        del repair_noise, config, clustering
+        del repair_noise, config, clustering, allow_single_cluster
         np.testing.assert_allclose(
             embeddings,
             np.array([[0.6, 0.8]], dtype=np.float32),
         )
         assert item_names == ["a.txt"]
-        return np.array([0]), 0
+        return make_cluster_result([0])
 
     def fake_generate_all_cluster_names(
         client,
-        labels: np.ndarray,
+        result,
         contents: list[str],
         files: list[Path],
         embeddings: np.ndarray | None = None,
@@ -1366,10 +1460,10 @@ def test_pipeline_reuses_hash_cached_embedding_for_duplicate_canonical(
         config: Config | None = None,
     ):
         del client, embeddings, merge_same_name, llm_model, config
-        assert labels.tolist() == [0]
+        assert result.labels.tolist() == [0]
         assert contents == [content]
         assert files == [canonical]
-        return labels, {0: "Cached Duplicate"}, 0
+        return make_cluster_result(result, cluster_names={0: "Cached Duplicate"})
 
     monkeypatch.setattr("dite.core.pipeline.get_embeddings", fail_get_embeddings)
     monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
@@ -1413,9 +1507,15 @@ def test_pipeline_expands_repaired_noise_count_to_duplicate_aliases(
     service = PipelineService(client=object(), config=Config(), cache=None)
 
     def fake_get_embeddings(
-        client, texts, *, config=None, file_names=None, embedding_model=None
+        client,
+        texts,
+        *,
+        config=None,
+        file_names=None,
+        embedding_model=None,
+        input_mode=None,
     ) -> np.ndarray:
-        del client, config, embedding_model
+        del client, config, embedding_model, input_mode
         assert texts == [duplicate_content, "unrelated content long enough"]
         assert file_names == ["a.txt", "c.txt"]
         return np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
@@ -1426,19 +1526,24 @@ def test_pipeline_expands_repaired_noise_count_to_duplicate_aliases(
         *,
         config=None,
         clustering=None,
+        allow_single_cluster=False,
         item_names=None,
     ):
-        del embeddings, repair_noise, config, clustering
+        del embeddings, repair_noise, config, clustering, allow_single_cluster
         assert item_names == ["a.txt", "c.txt"]
-        return (
-            np.array([0, -1], dtype=int),
-            1,
-            np.array([True, False], dtype=bool),
+        return make_cluster_result(
+            [0, -1],
+            repaired_mask=[True, False],
+            metrics=ClusterMetrics(
+                initial_clusters=1,
+                initial_noise=1,
+                noise_repaired=1,
+            ),
         )
 
     def fake_generate_all_cluster_names(
         client,
-        labels: np.ndarray,
+        result,
         contents: list[str],
         files: list[Path],
         embeddings: np.ndarray | None = None,
@@ -1447,10 +1552,10 @@ def test_pipeline_expands_repaired_noise_count_to_duplicate_aliases(
         config: Config | None = None,
     ):
         del client, embeddings, merge_same_name, llm_model, config
-        assert labels.tolist() == [0, -1]
+        assert result.labels.tolist() == [0, -1]
         assert contents == [duplicate_content, "unrelated content long enough"]
         assert files == [duplicate_a, noise]
-        return labels, {0: "Repaired Duplicate"}, 0
+        return make_cluster_result(result, cluster_names={0: "Repaired Duplicate"})
 
     monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
     monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
@@ -1467,6 +1572,104 @@ def test_pipeline_expands_repaired_noise_count_to_duplicate_aliases(
     assert result.labels.tolist() == [0, 0, -1]
     assert result.noise_repaired == 2
     assert result.extraction.duplicate_count == 1
+
+
+def test_pipeline_accumulates_small_and_name_cluster_merge_counts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    first = tmp_path / "a.txt"
+    second = tmp_path / "b.txt"
+    third = tmp_path / "c.txt"
+    first.write_text("alpha content long enough", encoding="utf-8")
+    second.write_text("beta content long enough", encoding="utf-8")
+    third.write_text("gamma content long enough", encoding="utf-8")
+
+    service = PipelineService(client=object(), config=Config(), cache=None)
+
+    def fake_get_embeddings(
+        client,
+        texts,
+        *,
+        config=None,
+        file_names=None,
+        embedding_model=None,
+        input_mode=None,
+    ) -> np.ndarray:
+        del client, texts, config, file_names, embedding_model, input_mode
+        return np.array(
+            [[1.0, 0.0], [0.99, 0.01], [0.0, 1.0]],
+            dtype=np.float32,
+        )
+
+    def fake_cluster_documents(
+        embeddings: np.ndarray,
+        repair_noise: bool,
+        *,
+        config=None,
+        clustering=None,
+        allow_single_cluster=False,
+        item_names=None,
+    ):
+        del (
+            embeddings,
+            repair_noise,
+            config,
+            clustering,
+            allow_single_cluster,
+            item_names,
+        )
+        return make_cluster_result(
+            [0, 0, 1],
+            repaired_mask=[False, False, False],
+            metrics=ClusterMetrics(
+                initial_clusters=2,
+                initial_noise=0,
+                noise_repaired=0,
+                small_clusters_merged=1,
+            ),
+        )
+
+    def fake_generate_all_cluster_names(
+        client,
+        result,
+        contents: list[str],
+        files: list[Path],
+        embeddings: np.ndarray | None = None,
+        merge_same_name: bool = True,
+        llm_model: str | None = None,
+        config: Config | None = None,
+    ):
+        del client, contents, files, embeddings, merge_same_name, llm_model, config
+        return make_cluster_result(
+            [0, 0, 0],
+            cluster_names={0: "Merged Cluster"},
+            repaired_mask=result.repaired_mask,
+            metrics=ClusterMetrics(
+                initial_clusters=result.metrics.initial_clusters,
+                initial_noise=result.metrics.initial_noise,
+                noise_repaired=result.metrics.noise_repaired,
+                small_clusters_merged=result.metrics.small_clusters_merged,
+                name_clusters_merged=1,
+            ),
+        )
+
+    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr(
+        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+    )
+
+    result = service.run(
+        tmp_path,
+        PipelineOptions(use_cache=False, use_embedding_cache=False, repair_noise=True),
+    )
+
+    assert result.cluster_metrics.initial_clusters == 2
+    assert result.cluster_metrics.small_clusters_merged == 1
+    assert result.cluster_metrics.name_clusters_merged == 1
+    assert result.clusters_merged == 2
+    assert result.cluster_names == {0: "Merged Cluster"}
+    assert result.labels.tolist() == [0, 0, 0]
 
 
 def test_extract_files_locks_down_failure_corpus_classification_baseline(
@@ -1701,8 +1904,15 @@ def test_pipeline_recomputes_embedding_when_model_changes(
     call_count = {"emb": 0}
 
     def fake_get_embeddings(
-        client, texts, *, config=None, file_names=None, embedding_model=None
+        client,
+        texts,
+        *,
+        config=None,
+        file_names=None,
+        embedding_model=None,
+        input_mode=None,
     ) -> np.ndarray:
+        del input_mode
         call_count["emb"] += 1
         assert embedding_model == "embed-v2"
         return np.array([[0.9, 0.8]], dtype=np.float32)
@@ -1713,13 +1923,14 @@ def test_pipeline_recomputes_embedding_when_model_changes(
         *,
         config=None,
         clustering=None,
+        allow_single_cluster=False,
         item_names=None,
     ):
-        return np.array([0]), 0
+        return make_cluster_result([0])
 
     def fake_generate_all_cluster_names(
         client,
-        labels: np.ndarray,
+        result,
         contents: list[str],
         files: list[Path],
         embeddings: np.ndarray | None = None,
@@ -1727,7 +1938,11 @@ def test_pipeline_recomputes_embedding_when_model_changes(
         llm_model: str | None = None,
         config: Config | None = None,
     ):
-        return labels, {0: "Cluster_A"}, 0
+        return make_cluster_result(
+            result,
+            cluster_names={0: "Cluster_A"},
+            metrics=ClusterMetrics(),
+        )
 
     monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
     monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
@@ -1777,11 +1992,18 @@ def test_pipeline_recomputes_embedding_when_input_version_changes(
     captured: dict[str, object] = {}
 
     def fake_get_embeddings(
-        client, texts, *, config=None, file_names=None, embedding_model=None
+        client,
+        texts,
+        *,
+        config=None,
+        file_names=None,
+        embedding_model=None,
+        input_mode=None,
     ) -> np.ndarray:
         captured["texts"] = texts
         captured["file_names"] = file_names
         captured["embedding_model"] = embedding_model
+        captured["input_mode"] = input_mode
         return np.array([[0.9, 0.8]], dtype=np.float32)
 
     def fake_cluster_documents(
@@ -1790,13 +2012,14 @@ def test_pipeline_recomputes_embedding_when_input_version_changes(
         *,
         config=None,
         clustering=None,
+        allow_single_cluster=False,
         item_names=None,
     ):
-        return np.array([0]), 0
+        return make_cluster_result([0])
 
     def fake_generate_all_cluster_names(
         client,
-        labels: np.ndarray,
+        result,
         contents: list[str],
         files: list[Path],
         embeddings: np.ndarray | None = None,
@@ -1804,7 +2027,11 @@ def test_pipeline_recomputes_embedding_when_input_version_changes(
         llm_model: str | None = None,
         config: Config | None = None,
     ):
-        return labels, {0: "Cluster_A"}, 0
+        return make_cluster_result(
+            result,
+            cluster_names={0: "Cluster_A"},
+            metrics=ClusterMetrics(),
+        )
 
     monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
     monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
@@ -1826,6 +2053,7 @@ def test_pipeline_recomputes_embedding_when_input_version_changes(
         "texts": ["same content"],
         "file_names": ["sample.txt"],
         "embedding_model": "embed-v1",
+        "input_mode": "with_filename",
     }
     np.testing.assert_allclose(
         result.embeddings,
@@ -1856,8 +2084,15 @@ def test_pipeline_uses_smart_content_excerpt_for_embedding(
         return ExtractionResult(content=long_content, success=True, extractor="docling")
 
     def fake_get_embeddings(
-        client, texts, *, config=None, file_names=None, embedding_model=None
+        client,
+        texts,
+        *,
+        config=None,
+        file_names=None,
+        embedding_model=None,
+        input_mode=None,
     ) -> np.ndarray:
+        del input_mode
         captured["texts"] = texts
         captured["file_names"] = file_names
         return np.array([[0.9, 0.8]], dtype=np.float32)
@@ -1868,13 +2103,14 @@ def test_pipeline_uses_smart_content_excerpt_for_embedding(
         *,
         config=None,
         clustering=None,
+        allow_single_cluster=False,
         item_names=None,
     ):
-        return np.array([0]), 0
+        return make_cluster_result([0])
 
     def fake_generate_all_cluster_names(
         client,
-        labels: np.ndarray,
+        result,
         contents: list[str],
         files: list[Path],
         embeddings: np.ndarray | None = None,
@@ -1882,7 +2118,11 @@ def test_pipeline_uses_smart_content_excerpt_for_embedding(
         llm_model: str | None = None,
         config: Config | None = None,
     ):
-        return labels, {0: "Cluster_A"}, 0
+        return make_cluster_result(
+            result,
+            cluster_names={0: "Cluster_A"},
+            metrics=ClusterMetrics(),
+        )
 
     monkeypatch.setattr(
         PipelineService,
@@ -2115,7 +2355,7 @@ def test_cluster_documents_repairs_all_noise_with_similarity_fallback(
 
     config = Config()
     config.clustering.min_cluster_size = 2
-    labels, repaired_count = cluster_documents(
+    result = cluster_documents(
         np.array(
             [
                 [10.0, 0.0],
@@ -2130,8 +2370,8 @@ def test_cluster_documents_repairs_all_noise_with_similarity_fallback(
         knn_distance_threshold=0.05,
     )
 
-    assert repaired_count == 4
-    assert labels.tolist() == [0, 0, 1, 1]
+    assert result.noise_repaired == 4
+    assert result.labels.tolist() == [0, 0, 1, 1]
 
 
 def test_cluster_documents_keeps_all_noise_when_repair_disabled(
@@ -2150,14 +2390,14 @@ def test_cluster_documents_keeps_all_noise_when_repair_disabled(
     monkeypatch.setattr(clusterer.hdbscan, "HDBSCAN", _FakeHDBSCAN)
 
     config = Config()
-    labels, repaired_count = cluster_documents(
+    result = cluster_documents(
         np.array([[1.0, 0.0], [0.99, 0.01]], dtype=np.float32),
         config=config,
         repair_noise=False,
     )
 
-    assert repaired_count == 0
-    assert labels.tolist() == [-1, -1]
+    assert result.noise_repaired == 0
+    assert result.labels.tolist() == [-1, -1]
 
 
 def test_cluster_documents_uses_clustering_config_without_knn_when_disabled(
@@ -2177,6 +2417,7 @@ def test_cluster_documents_uses_clustering_config_without_knn_when_disabled(
             cluster_selection_epsilon,
             metric,
             cluster_selection_method,
+            allow_single_cluster,
         ) -> None:
             captured["init"] = {
                 "min_cluster_size": min_cluster_size,
@@ -2184,6 +2425,7 @@ def test_cluster_documents_uses_clustering_config_without_knn_when_disabled(
                 "cluster_selection_epsilon": cluster_selection_epsilon,
                 "metric": metric,
                 "cluster_selection_method": cluster_selection_method,
+                "allow_single_cluster": allow_single_cluster,
             }
 
         def fit_predict(self, embeddings: np.ndarray) -> np.ndarray:
@@ -2202,20 +2444,21 @@ def test_cluster_documents_uses_clustering_config_without_knn_when_disabled(
     config.clustering.cluster_selection_epsilon = 0.5
     config.clustering.cluster_selection_method = "leaf"
 
-    labels, repaired_count = cluster_documents(
+    result = cluster_documents(
         np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
         config=config,
         repair_noise=False,
     )
 
-    assert repaired_count == 0
-    assert np.array_equal(labels, np.array([0, -1], dtype=int))
+    assert result.noise_repaired == 0
+    assert np.array_equal(result.labels, np.array([0, -1], dtype=int))
     assert captured["init"] == {
         "min_cluster_size": 2,
         "min_samples": 2,
         "cluster_selection_epsilon": 0.5,
         "metric": "euclidean",
         "cluster_selection_method": "leaf",
+        "allow_single_cluster": False,
     }
     assert captured["fit_predict_shape"] == (2, 2)
 
@@ -2232,7 +2475,7 @@ def test_cluster_documents_passes_knn_overrides_to_repair(monkeypatch) -> None:
 
         def fit_predict(self, embeddings: np.ndarray) -> np.ndarray:
             del embeddings
-            return np.array([0, -1], dtype=int)
+            return np.array([0, 0, -1], dtype=int)
 
     def fake_repair(
         embeddings: np.ndarray,
@@ -2246,7 +2489,7 @@ def test_cluster_documents_passes_knn_overrides_to_repair(monkeypatch) -> None:
         captured["k"] = k
         captured["distance_threshold"] = distance_threshold
         captured["item_names"] = item_names
-        return np.array([0, 0], dtype=int), 1
+        return np.array([0, 0, 0], dtype=int), 1
 
     monkeypatch.setattr(clusterer.hdbscan, "HDBSCAN", _FakeHDBSCAN)
     monkeypatch.setattr(clusterer, "repair_noise_with_knn", fake_repair)
@@ -2254,23 +2497,27 @@ def test_cluster_documents_passes_knn_overrides_to_repair(monkeypatch) -> None:
     config = Config()
     config.clustering.knn_k = 99
     config.clustering.knn_distance_threshold = 0.99
+    config.clustering.small_cluster_merge_enabled = False
 
-    labels, repaired_count = cluster_documents(
-        np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+    result = cluster_documents(
+        np.array(
+            [[1.0, 0.0], [0.99, 0.01], [0.0, 1.0]],
+            dtype=np.float32,
+        ),
         config=config,
         repair_noise=True,
         knn_k=7,
         knn_distance_threshold=0.3,
-        item_names=["a.txt", "b.txt"],
+        item_names=["a.txt", "a-2.txt", "b.txt"],
     )
 
-    assert repaired_count == 1
-    assert np.array_equal(labels, np.array([0, 0], dtype=int))
-    assert captured["shape"] == (2, 2)
-    assert np.array_equal(captured["labels"], np.array([0, -1], dtype=int))
+    assert result.noise_repaired == 1
+    assert np.array_equal(result.labels, np.array([0, 0, 0], dtype=int))
+    assert captured["shape"] == (3, 2)
+    assert np.array_equal(captured["labels"], np.array([0, 0, -1], dtype=int))
     assert captured["k"] == 7
     assert captured["distance_threshold"] == 0.3
-    assert captured["item_names"] == ["a.txt", "b.txt"]
+    assert captured["item_names"] == ["a.txt", "a-2.txt", "b.txt"]
 
 
 def test_cluster_documents_normalizes_before_hdbscan(monkeypatch) -> None:
@@ -2289,18 +2536,201 @@ def test_cluster_documents_normalizes_before_hdbscan(monkeypatch) -> None:
     monkeypatch.setattr(clusterer.hdbscan, "HDBSCAN", _FakeHDBSCAN)
 
     config = Config()
-    labels, repaired_count = cluster_documents(
+    config.clustering.min_cluster_size = 2
+    result = cluster_documents(
         np.array([[3.0, 4.0], [0.0, 2.0]], dtype=np.float32),
         config=config,
         repair_noise=False,
     )
 
-    assert repaired_count == 0
-    assert labels.tolist() == [0, 0]
+    assert result.noise_repaired == 0
+    assert result.labels.tolist() == [0, 0]
     np.testing.assert_allclose(
         captured["embeddings"],
         np.array([[0.6, 0.8], [0.0, 1.0]], dtype=np.float32),
     )
+
+
+def test_cluster_documents_merges_small_cluster_by_similarity(
+    monkeypatch,
+) -> None:
+    from dite.core import clusterer
+    from dite.core.clusterer import ClusterMetrics, cluster_documents
+
+    class _FakeHDBSCAN:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+
+        def fit_predict(self, embeddings: np.ndarray) -> np.ndarray:
+            del embeddings
+            return np.array([0, 0, 1], dtype=int)
+
+    monkeypatch.setattr(clusterer.hdbscan, "HDBSCAN", _FakeHDBSCAN)
+
+    config = Config()
+    config.clustering.min_cluster_size = 2
+    config.clustering.small_cluster_merge_enabled = True
+    config.clustering.small_cluster_merge_max_size = 2
+    config.clustering.small_cluster_merge_cosine_threshold = 0.9
+
+    result = cluster_documents(
+        np.array(
+            [
+                [1.0, 0.0],
+                [0.99, 0.01],
+                [0.98, 0.02],
+            ],
+            dtype=np.float32,
+        ),
+        config=config,
+        repair_noise=False,
+    )
+
+    assert np.array_equal(result.labels, np.array([0, 0, 0], dtype=int))
+    assert np.array_equal(result.repaired_mask, np.array([False, False, False]))
+    assert isinstance(result.metrics, ClusterMetrics)
+    assert result.metrics.initial_clusters == 2
+    assert result.metrics.initial_noise == 0
+    assert result.metrics.noise_repaired == 0
+    assert result.metrics.small_clusters_merged == 1
+    assert result.metrics.small_cluster_merge_candidates == 2
+    assert result.metrics.small_cluster_merge_skipped == 0
+    assert result.metrics.small_cluster_merge_max_similarity is not None
+    assert len(result.metrics.small_cluster_merge_events) == 1
+    event = result.metrics.small_cluster_merge_events[0]
+    assert event.source_label == 1
+    assert event.target_label == 0
+    assert event.source_size == 1
+    assert event.target_size_before == 2
+
+
+def test_cluster_documents_keeps_small_cluster_when_similarity_low(
+    monkeypatch,
+) -> None:
+    from dite.core import clusterer
+    from dite.core.clusterer import cluster_documents
+
+    class _FakeHDBSCAN:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+
+        def fit_predict(self, embeddings: np.ndarray) -> np.ndarray:
+            del embeddings
+            return np.array([0, 0, 1], dtype=int)
+
+    monkeypatch.setattr(clusterer.hdbscan, "HDBSCAN", _FakeHDBSCAN)
+
+    config = Config()
+    config.clustering.min_cluster_size = 2
+    config.clustering.small_cluster_merge_enabled = True
+    config.clustering.small_cluster_merge_max_size = 2
+    config.clustering.small_cluster_merge_cosine_threshold = 0.99
+
+    result = cluster_documents(
+        np.array(
+            [
+                [1.0, 0.0],
+                [0.99, 0.01],
+                [0.0, 1.0],
+            ],
+            dtype=np.float32,
+        ),
+        config=config,
+        repair_noise=False,
+    )
+
+    assert np.array_equal(result.labels, np.array([0, 0, 1], dtype=int))
+    assert np.array_equal(result.repaired_mask, np.array([False, False, False]))
+    assert result.metrics.small_clusters_merged == 0
+    assert result.metrics.small_cluster_merge_candidates == 2
+    assert result.metrics.small_cluster_merge_skipped == 2
+    assert len(result.metrics.small_cluster_merge_events) == 0
+    assert len(result.metrics.small_cluster_skip_events) == 2
+    skip_event = result.metrics.small_cluster_skip_events[0]
+    assert skip_event.source_label == 1
+    assert skip_event.best_target_label == 0
+    assert skip_event.reason == "below_similarity_threshold"
+
+
+def test_merge_small_clusters_by_similarity_skips_large_source_clusters() -> None:
+    from dite.core.clusterer import merge_small_clusters_by_similarity
+
+    labels, merged_count, _merge_events, _skip_events, _max_similarity = (
+        merge_small_clusters_by_similarity(
+        np.array(
+            [
+                [1.0, 0.0],
+                [0.99, 0.01],
+                [0.98, 0.02],
+                [0.0, 1.0],
+            ],
+            dtype=np.float32,
+        ),
+        np.array([0, 0, 0, 1], dtype=int),
+        max_size=1,
+        cosine_threshold=0.95,
+    ))
+
+    assert merged_count == 0
+    assert np.array_equal(labels, np.array([0, 0, 0, 1], dtype=int))
+
+
+def test_merge_small_clusters_by_similarity_prefers_larger_target_on_tie() -> None:
+    from dite.core.clusterer import merge_small_clusters_by_similarity
+
+    labels, merged_count, _merge_events, _skip_events, _max_similarity = (
+        merge_small_clusters_by_similarity(
+        np.array(
+            [
+                [1.0, 0.0],
+                [0.8, 0.2],
+                [0.8, -0.2],
+                [1.0, 0.0],
+            ],
+            dtype=np.float32,
+        ),
+        np.array([0, 1, 1, 2], dtype=int),
+        max_size=1,
+        cosine_threshold=0.95,
+    ))
+
+    assert merged_count == 2
+    assert labels[0] == 1
+
+
+def test_cluster_documents_merges_small_cluster_with_real_hdbscan_defaults() -> None:
+    from dite.core.clusterer import cluster_documents
+
+    config = Config()
+    config.clustering.min_cluster_size = 2
+    config.clustering.min_samples = 1
+    config.clustering.cluster_selection_epsilon = 0.0
+    config.clustering.cluster_selection_method = "eom"
+    config.clustering.small_cluster_merge_enabled = True
+    config.clustering.small_cluster_merge_max_size = 2
+    config.clustering.small_cluster_merge_cosine_threshold = 0.9
+
+    result = cluster_documents(
+        np.array(
+            [
+                [1.0, 0.0],
+                [0.99, 0.01],
+                [0.98, 0.02],
+                [0.0, 1.0],
+                [0.01, 0.99],
+            ],
+            dtype=np.float32,
+        ),
+        config=config,
+        repair_noise=False,
+    )
+
+    assert np.array_equal(
+        result.repaired_mask, np.array([False, False, False, False, False])
+    )
+    assert result.metrics.initial_clusters >= 2
+    assert result.metrics.small_clusters_merged >= 0
+    assert len(set(result.labels)) <= result.metrics.initial_clusters + 1
 
 
 def test_scan_files_excludes_target_directory(tmp_path: Path) -> None:
@@ -2402,13 +2832,14 @@ def test_pipeline_verbose_logs_include_extraction_summary(
         *,
         config=None,
         clustering=None,
+        allow_single_cluster=False,
         item_names=None,
     ):
-        return np.array([0]), 0
+        return make_cluster_result([0])
 
     def fake_generate_all_cluster_names(
         client,
-        labels: np.ndarray,
+        result,
         contents: list[str],
         files: list[Path],
         embeddings: np.ndarray | None = None,
@@ -2416,7 +2847,11 @@ def test_pipeline_verbose_logs_include_extraction_summary(
         llm_model: str | None = None,
         config: Config | None = None,
     ):
-        return labels, {0: "Notes"}, 0
+        return make_cluster_result(
+            result,
+            cluster_names={0: "Notes"},
+            metrics=ClusterMetrics(),
+        )
 
     monkeypatch.setattr(
         "dite.extractors.router.extract_document", fake_extract_document
@@ -2482,10 +2917,10 @@ def test_generate_all_cluster_names_debug_uses_letter_labels(capsys) -> None:
     setup_logging(verbose=True)
     set_locale("en")
 
-    labels = np.array([0, 2, 2], dtype=int)
+    result = make_cluster_result([0, 2, 2])
     generate_all_cluster_names(
         client=_Client(),
-        labels=labels,
+        result=result,
         contents=["doc a", "doc b", "doc c"],
         files=[Path("a.txt"), Path("b.txt"), Path("c.txt")],
         config=Config(),
@@ -2545,11 +2980,11 @@ def test_generate_all_cluster_names_limits_cluster_naming_workers(
 
     config = Config()
     config.processing.cluster_naming_workers = 2
-    labels = np.array([3, 1, 2, 0], dtype=int)
+    result = make_cluster_result([3, 1, 2, 0])
 
-    _, cluster_names, merged_count = generate_all_cluster_names(
+    named_result = generate_all_cluster_names(
         client=_Client(),
-        labels=labels,
+        result=result,
         contents=["a", "b", "c", "d"],
         files=[
             Path("cluster-3.txt"),
@@ -2563,9 +2998,9 @@ def test_generate_all_cluster_names_limits_cluster_naming_workers(
         llm_model="dummy-model",
     )
 
-    assert merged_count == 0
+    assert named_result.name_clusters_merged == 0
     assert max_concurrent == 2
-    assert cluster_names == {
+    assert named_result.cluster_names == {
         0: "Cluster 0",
         1: "Cluster 1",
         2: "Cluster 2",
@@ -2611,10 +3046,11 @@ def test_generate_all_cluster_names_preserves_label_mapping_out_of_order_complet
     config = Config()
     config.processing.cluster_naming_workers = 3
     labels = np.array([5, 2, 5, 7, 2], dtype=int)
+    result = make_cluster_result(labels)
 
-    new_labels, cluster_names, merged_count = generate_all_cluster_names(
+    named_result = generate_all_cluster_names(
         client=_Client(),
-        labels=labels,
+        result=result,
         contents=["a", "b", "c", "d", "e"],
         files=[
             Path("cluster-5-a.txt"),
@@ -2629,9 +3065,9 @@ def test_generate_all_cluster_names_preserves_label_mapping_out_of_order_complet
         llm_model="dummy-model",
     )
 
-    assert merged_count == 0
-    assert np.array_equal(new_labels, labels)
-    assert cluster_names == {
+    assert named_result.name_clusters_merged == 0
+    assert np.array_equal(named_result.labels, labels)
+    assert named_result.cluster_names == {
         2: "Name 2",
         5: "Name 5",
         7: "Name 7",
@@ -2681,10 +3117,11 @@ def test_generate_all_cluster_names_merges_duplicate_names_after_concurrent_comp
     config = Config()
     config.processing.cluster_naming_workers = 3
     labels = np.array([5, 1, 3, 5, 1], dtype=int)
+    result = make_cluster_result(labels)
 
-    merged_labels, cluster_names, merged_count = generate_all_cluster_names(
+    named_result = generate_all_cluster_names(
         client=_Client(),
-        labels=labels,
+        result=result,
         contents=["a", "b", "c", "d", "e"],
         files=[
             Path("cluster-5-a.txt"),
@@ -2699,9 +3136,9 @@ def test_generate_all_cluster_names_merges_duplicate_names_after_concurrent_comp
         llm_model="dummy-model",
     )
 
-    assert merged_count == 1
-    assert np.array_equal(merged_labels, np.array([1, 1, 3, 1, 1], dtype=int))
-    assert cluster_names == {
+    assert named_result.name_clusters_merged == 1
+    assert np.array_equal(named_result.labels, np.array([1, 1, 3, 1, 1], dtype=int))
+    assert named_result.cluster_names == {
         1: "Shared Topic",
         3: "Unique Topic",
     }
@@ -2760,11 +3197,11 @@ def test_generate_all_cluster_names_prewarms_client_resources_before_worker_thre
 
     config = Config()
     config.processing.cluster_naming_workers = 3
-    labels = np.array([0, 1, 2], dtype=int)
+    result = make_cluster_result([0, 1, 2])
 
-    _, cluster_names, merged_count = generate_all_cluster_names(
+    named_result = generate_all_cluster_names(
         client=_Client(),
-        labels=labels,
+        result=result,
         contents=["a", "b", "c"],
         files=[
             Path("cluster-0.txt"),
@@ -2777,8 +3214,8 @@ def test_generate_all_cluster_names_prewarms_client_resources_before_worker_thre
         llm_model="dummy-model",
     )
 
-    assert merged_count == 0
-    assert cluster_names == {
+    assert named_result.name_clusters_merged == 0
+    assert named_result.cluster_names == {
         0: "cluster-0",
         1: "cluster-1",
         2: "cluster-2",
@@ -2826,10 +3263,11 @@ def test_generate_all_cluster_names_integration_merges_same_names_deterministica
     config = Config()
     config.processing.cluster_naming_workers = 3
     labels = np.array([8, 8, 3, 3, 5, 5], dtype=int)
+    result = make_cluster_result(labels)
 
-    merged_labels, cluster_names, merged_count = generate_all_cluster_names(
+    named_result = generate_all_cluster_names(
         client=_Client(),
-        labels=labels,
+        result=result,
         contents=[
             "Linear Algebra Workbook\nMatrices and vectors.",
             "Linear Algebra Exercises\nEigenvalues and bases.",
@@ -2853,9 +3291,9 @@ def test_generate_all_cluster_names_integration_merges_same_names_deterministica
     )
 
     assert len(calls) == 3
-    assert merged_count == 1
-    assert np.array_equal(merged_labels, np.array([3, 3, 3, 3, 5, 5], dtype=int))
-    assert cluster_names == {
+    assert named_result.name_clusters_merged == 1
+    assert np.array_equal(named_result.labels, np.array([3, 3, 3, 3, 5, 5], dtype=int))
+    assert named_result.cluster_names == {
         3: "Linear Algebra Notes",
         5: "Financial Reports",
     }
@@ -2869,10 +3307,10 @@ def test_generate_all_cluster_names_skips_client_access_for_noise_only_input() -
         def chat(self):
             raise AssertionError("noise-only input should not access client resources")
 
-    labels = np.array([-1, -1, -1], dtype=int)
-    new_labels, cluster_names, merged_count = generate_all_cluster_names(
+    result = make_cluster_result([-1, -1, -1])
+    named_result = generate_all_cluster_names(
         client=_Client(),
-        labels=labels,
+        result=result,
         contents=["a", "b", "c"],
         files=[Path("a.txt"), Path("b.txt"), Path("c.txt")],
         config=Config(),
@@ -2881,9 +3319,9 @@ def test_generate_all_cluster_names_skips_client_access_for_noise_only_input() -
         llm_model="dummy-model",
     )
 
-    assert np.array_equal(new_labels, labels)
-    assert cluster_names == {}
-    assert merged_count == 0
+    assert np.array_equal(named_result.labels, result.labels)
+    assert named_result.cluster_names == {}
+    assert named_result.name_clusters_merged == 0
 
 
 def test_generate_all_cluster_names_clamps_non_positive_worker_count_to_one() -> None:
@@ -2924,10 +3362,11 @@ def test_generate_all_cluster_names_clamps_non_positive_worker_count_to_one() ->
     config = Config()
     config.processing.cluster_naming_workers = 0
     labels = np.array([0, 0, 1, 1], dtype=int)
+    result = make_cluster_result(labels)
 
-    new_labels, cluster_names, merged_count = generate_all_cluster_names(
+    named_result = generate_all_cluster_names(
         client=_Client(),
-        labels=labels,
+        result=result,
         contents=[
             "Topic Zero\nAlpha",
             "Topic Zero\nBeta",
@@ -2947,9 +3386,9 @@ def test_generate_all_cluster_names_clamps_non_positive_worker_count_to_one() ->
     )
 
     assert max_concurrent == 1
-    assert merged_count == 0
-    assert np.array_equal(new_labels, labels)
-    assert cluster_names == {
+    assert named_result.name_clusters_merged == 0
+    assert np.array_equal(named_result.labels, labels)
+    assert named_result.cluster_names == {
         0: "Stable Topic",
         1: "Stable Topic",
     }
@@ -2979,10 +3418,10 @@ def test_generate_all_cluster_names_keeps_duplicate_names_when_merge_disabled() 
     class _Client:
         chat = _Chat()
 
-    labels = np.array([4, 4, 7, 7], dtype=int)
-    new_labels, cluster_names, merged_count = generate_all_cluster_names(
+    result = make_cluster_result([4, 4, 7, 7])
+    named_result = generate_all_cluster_names(
         client=_Client(),
-        labels=labels,
+        result=result,
         contents=[
             "Topic Four\nAlpha",
             "Topic Four\nBeta",
@@ -3001,9 +3440,9 @@ def test_generate_all_cluster_names_keeps_duplicate_names_when_merge_disabled() 
         llm_model="dummy-model",
     )
 
-    assert merged_count == 0
-    assert np.array_equal(new_labels, labels)
-    assert cluster_names == {
+    assert named_result.name_clusters_merged == 0
+    assert np.array_equal(named_result.labels, result.labels)
+    assert named_result.cluster_names == {
         4: "Shared Topic",
         7: "Shared Topic",
     }
@@ -3051,11 +3490,11 @@ def test_generate_all_cluster_names_uses_async_request_runtime_when_available(
         chat = _Chat()
 
     runtime = _Runtime()
-    labels = np.array([0, 0, 1, 1], dtype=int)
+    result = make_cluster_result([0, 0, 1, 1])
     config = Config()
-    new_labels, cluster_names, merged_count = generate_all_cluster_names(
+    named_result = generate_all_cluster_names(
         client=_Client(),
-        labels=labels,
+        result=result,
         contents=[
             "Matrices and vectors",
             "Linear transformations",
@@ -3075,9 +3514,9 @@ def test_generate_all_cluster_names_uses_async_request_runtime_when_available(
         request_runtime=runtime,
     )
 
-    assert merged_count == 0
-    assert np.array_equal(new_labels, labels)
-    assert cluster_names == {
+    assert named_result.name_clusters_merged == 0
+    assert np.array_equal(named_result.labels, result.labels)
+    assert named_result.cluster_names == {
         0: "Linear Algebra",
         1: "Financial Reports",
     }
@@ -3110,10 +3549,10 @@ def test_generate_all_cluster_names_labels_invalid_model_output_per_cluster() ->
         chat = _Chat()
 
     set_locale("en")
-    labels = np.array([2, 2, 5, 5], dtype=int)
-    new_labels, cluster_names, merged_count = generate_all_cluster_names(
+    result = make_cluster_result([2, 2, 5, 5])
+    named_result = generate_all_cluster_names(
         client=_Client(),
-        labels=labels,
+        result=result,
         contents=["   ", "\n\n", "   ", "\n\n"],
         files=[
             Path("cover.pdf"),
@@ -3127,9 +3566,9 @@ def test_generate_all_cluster_names_labels_invalid_model_output_per_cluster() ->
         llm_model="dummy-model",
     )
 
-    assert merged_count == 0
-    assert np.array_equal(new_labels, labels)
-    assert cluster_names == {
+    assert named_result.name_clusters_merged == 0
+    assert np.array_equal(named_result.labels, result.labels)
+    assert named_result.cluster_names == {
         2: "Unnamed-2",
         5: "Unnamed-5",
     }
@@ -3183,9 +3622,10 @@ def test_generate_all_cluster_names_falls_back_to_unnamed_on_api_error() -> None
     files = [Path("ml.txt"), Path("finance.txt")]
     embeddings = np.array([[0.1, 0.2], [0.2, 0.3]], dtype=np.float32)
 
-    new_labels, cluster_names, merged_count = generate_all_cluster_names(
+    result = make_cluster_result(labels)
+    named_result = generate_all_cluster_names(
         client=_FailingClient(),
-        labels=labels,
+        result=result,
         contents=contents,
         files=files,
         config=Config(),
@@ -3194,9 +3634,9 @@ def test_generate_all_cluster_names_falls_back_to_unnamed_on_api_error() -> None
         llm_model="dummy-model",
     )
 
-    assert np.array_equal(new_labels, labels)
-    assert cluster_names == {0: "机器学习导论", 1: "财务报表分析"}
-    assert merged_count == 0
+    assert np.array_equal(named_result.labels, labels)
+    assert named_result.cluster_names == {0: "机器学习导论", 1: "财务报表分析"}
+    assert named_result.name_clusters_merged == 0
 
 
 def test_generate_cluster_name_truncates_long_contents_before_api_call() -> None:

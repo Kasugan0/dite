@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 
 from dite.cli import app
 from dite.config import load_config
-from dite.core.clusterer import generate_cluster_name
+from dite.core.clusterer import ClusterMetrics, ClusterResult, generate_cluster_name
 from dite.core.embedder import get_embeddings
 from dite.core.pipeline import PipelineOptions, PipelineService
 from dite.extractors.docling import (
@@ -55,9 +55,6 @@ def _real_api_settings() -> tuple[OpenAI, str, str]:
 
 
 def _require_real_pdf_corpus_enabled() -> Path:
-    if os.getenv("DITE_REAL_PDF_CORPUS") != "1":
-        pytest.skip("Set DITE_REAL_PDF_CORPUS=1 to run real PDF corpus regressions.")
-
     if not has_docling_pdf_artifacts():
         pytest.skip(
             "Docling PDF models are not ready. Run "
@@ -68,13 +65,6 @@ def _require_real_pdf_corpus_enabled() -> Path:
     if not corpus_dir.exists():
         pytest.skip("Missing docs/test corpus.")
     return corpus_dir
-
-
-def _require_real_pdf_cli_enabled() -> None:
-    if os.getenv("DITE_REAL_PDF_CLI") != "1":
-        pytest.skip(
-            "Set DITE_REAL_PDF_CLI=1 to run the real pdf-check CLI corpus regression."
-        )
 
 
 def _real_failure_corpus_files(corpus_dir: Path) -> list[Path]:
@@ -356,9 +346,15 @@ def test_real_api_generate_all_cluster_names_smoke() -> None:
         embedding_model=embed_model,
     )
 
-    new_labels, cluster_names, merged_count = generate_all_cluster_names(
-        client=client,
+    result = ClusterResult(
         labels=labels,
+        cluster_names={},
+        repaired_mask=np.zeros(labels.shape, dtype=bool),
+        metrics=ClusterMetrics(),
+    )
+    named_result = generate_all_cluster_names(
+        client=client,
+        result=result,
         contents=texts,
         files=files,
         config=config,
@@ -367,12 +363,15 @@ def test_real_api_generate_all_cluster_names_smoke() -> None:
         llm_model=llm_model,
     )
 
-    assert merged_count == 0
-    assert np.array_equal(new_labels, labels)
-    assert set(cluster_names) == {10, 20, 30}
-    assert all(name.strip() for name in cluster_names.values())
-    assert all("\n" not in name for name in cluster_names.values())
-    assert all(name not in {"未命名", "Unnamed"} for name in cluster_names.values())
+    assert named_result.name_clusters_merged == 0
+    assert np.array_equal(named_result.labels, labels)
+    assert set(named_result.cluster_names) == {10, 20, 30}
+    assert all(name.strip() for name in named_result.cluster_names.values())
+    assert all("\n" not in name for name in named_result.cluster_names.values())
+    assert all(
+        name not in {"未命名", "Unnamed"}
+        for name in named_result.cluster_names.values()
+    )
 
 
 def test_real_api_cluster_name_file_name_only_smoke() -> None:
@@ -530,7 +529,6 @@ def test_real_api_pdf_check_fixture_summary_matches_current_baseline(
 ) -> None:
     corpus_dir = _require_real_pdf_corpus_enabled()
     source_models_dir = get_docling_pdf_artifacts_path()
-    _require_real_pdf_cli_enabled()
     config_values = _real_api_config_values()
     home_dir = tmp_path / "home"
     fixture_dir = tmp_path / "fixture"
