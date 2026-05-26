@@ -1,6 +1,5 @@
 """Docling 提取器 - 用于现代文档格式"""
 
-import logging
 import multiprocessing
 import signal
 import threading
@@ -10,6 +9,7 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 
 from dite.i18n import set_locale, t
+from dite.utils.logging import silence_docling_logging
 
 from .base import BaseExtractor, ExtractionResult
 
@@ -103,20 +103,7 @@ def download_docling_pdf_models(
 
 def _suppress_docling_warnings() -> None:
     """抑制 docling 内部的警告日志（如 WMF 图片加载警告）"""
-    # 这些日志器在 docling 导入后才存在，需要在使用前配置
-    loggers_to_suppress = [
-        "docling",
-        "docling_core",
-        "docling.backend",
-        "docling.backend.mspowerpoint_backend",
-        "docling.backend.msword_backend",
-        "docling.pipeline",
-        "docling.document_converter",
-    ]
-    for name in loggers_to_suppress:
-        logger = logging.getLogger(name)
-        logger.setLevel(logging.ERROR)  # 只显示 ERROR 及以上
-        logger.propagate = False
+    silence_docling_logging()
 
 
 def _docling_pdf_extract_child(
@@ -129,6 +116,7 @@ def _docling_pdf_extract_child(
 ) -> None:
     try:
         set_locale(locale)
+        silence_docling_logging()
         extractor = DoclingExtractor(
             enable_ocr=enable_ocr,
             artifacts_path=Path(artifacts_path) if artifacts_path is not None else None,

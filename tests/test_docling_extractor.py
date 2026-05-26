@@ -4,6 +4,7 @@ from pathlib import Path
 from dite.extractors.base import ExtractionResult
 from dite.extractors.docling import (
     DoclingExtractor,
+    _docling_pdf_extract_child,
     _get_required_pdf_artifact_dirs,
     download_docling_pdf_models,
     extract_docling_pdf_in_subprocess,
@@ -245,6 +246,68 @@ def test_extract_docling_pdf_in_subprocess_returns_child_result(
     assert result == expected
     assert captured["started"] is True
     assert captured["join_calls"] == [0.5]
+
+
+def test_docling_pdf_extract_child_silences_docling_logging_before_extract(
+    tmp_path: Path, monkeypatch
+) -> None:
+    events: list[str] = []
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7")
+
+    class _Conn:
+        def __init__(self) -> None:
+            self.payload = None
+            self.closed = False
+
+        def send(self, payload) -> None:
+            self.payload = payload
+
+        def close(self) -> None:
+            self.closed = True
+
+    def fake_silence_docling_logging() -> None:
+        events.append("silence")
+
+    class _FakeDoclingExtractor:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+            events.append("init")
+
+        def extract(self, file_path: Path) -> ExtractionResult:
+            events.append(f"extract:{file_path.name}")
+            return ExtractionResult(
+                content="child result",
+                success=True,
+                extractor="docling",
+            )
+
+    monkeypatch.setattr(
+        "dite.extractors.docling.silence_docling_logging",
+        fake_silence_docling_logging,
+    )
+    monkeypatch.setattr(
+        "dite.extractors.docling.DoclingExtractor",
+        _FakeDoclingExtractor,
+    )
+
+    conn = _Conn()
+    _docling_pdf_extract_child(
+        str(pdf_path),
+        False,
+        None,
+        "en",
+        "auto",
+        conn,
+    )
+
+    assert events == ["silence", "init", f"extract:{pdf_path.name}"]
+    assert conn.closed is True
+    assert conn.payload == ExtractionResult(
+        content="child result",
+        success=True,
+        extractor="docling",
+    )
 
 
 def test_extract_docling_pdf_in_subprocess_times_out_and_terminates(

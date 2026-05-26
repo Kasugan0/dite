@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import runpy
 from pathlib import Path
 
@@ -203,6 +204,28 @@ def test_setup_logging_respects_verbose_and_quiet() -> None:
     assert quiet_logger.min_level == LogLevel.ERROR
     assert quiet_logger._should_log(LogLevel.INFO) is False
     assert get_logger() is quiet_logger
+
+
+def test_setup_logging_silences_docling_error_logs(capsys) -> None:
+    setup_logging()
+
+    logging.getLogger("docling.pipeline.standard_pdf_pipeline").error("docling-noise")
+    captured = capsys.readouterr()
+
+    assert captured.err == ""
+    assert "docling-noise" not in captured.out
+
+
+def test_setup_logging_silences_docling_error_logs_in_verbose_mode(capsys) -> None:
+    setup_logging(verbose=True)
+
+    logging.getLogger("docling.pipeline.standard_pdf_pipeline").error(
+        "docling-verbose-noise"
+    )
+    captured = capsys.readouterr()
+
+    assert captured.err == ""
+    assert "docling-verbose-noise" not in captured.out
 
 
 def test_python_m_entrypoint_calls_cli_app(monkeypatch) -> None:

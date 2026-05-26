@@ -138,6 +138,17 @@ class Logger:
 # 全局 Logger 实例
 _logger: Logger | None = None
 
+_DOCLING_LOGGER_NAMES = (
+    "docling",
+    "docling_core",
+    "docling.document_converter",
+    "docling.pipeline",
+    "docling.backend",
+    "docling.backend.mspowerpoint_backend",
+    "docling.backend.msword_backend",
+    "docling.datamodel",
+)
+
 
 def get_logger() -> Logger:
     """获取全局 Logger 实例"""
@@ -166,45 +177,29 @@ def setup_logging(
     global _logger
     _logger = Logger(verbose=verbose, quiet=quiet, force_color=force_color)
 
-    # 同步配置第三方库（如 docling）的日志级别
-    python_level = LEVEL_TO_LOGGING.get(_logger.min_level.value, logging.WARNING)
-    _configure_third_party_logging(python_level)
+    _configure_third_party_logging()
 
     return _logger
 
 
-def _configure_third_party_logging(level: int) -> None:
-    """
-    配置第三方库的日志级别
-
-    Args:
-        level: Python logging 级别
-    """
-    # docling 的日志器（包括会输出 WMF 警告的子模块）
-    docling_loggers = [
-        "docling",
-        "docling_core",
-        "docling.document_converter",
-        "docling.pipeline",
-        "docling.backend",
-        "docling.backend.mspowerpoint_backend",
-        "docling.backend.msword_backend",
-        "docling.datamodel",
-    ]
-    for logger_name in docling_loggers:
+def silence_docling_logging() -> None:
+    """Silence raw Docling logs in both parent and child processes."""
+    for logger_name in _DOCLING_LOGGER_NAMES:
         logger = logging.getLogger(logger_name)
-        logger.setLevel(level)
-        # 禁止传播到 root logger（避免重复输出）
-        logger.propagate = False
-        # 清除已有的 handler（docling 可能添加了自己的）
         logger.handlers.clear()
+        logger.addHandler(logging.NullHandler())
+        logger.propagate = False
+        logger.setLevel(logging.CRITICAL + 1)
 
-    # 同时配置 root logger（防止 docling 使用 root logger）
+
+def _configure_third_party_logging() -> None:
+    """Configure third-party logging behavior used by the CLI."""
+    silence_docling_logging()
+
+    # 给 root logger 一个空 handler，避免第三方 error 日志落到 lastResort。
     root_logger = logging.getLogger()
     if not root_logger.handlers:
-        # 如果 root logger 没有 handler，添加一个 NullHandler
         root_logger.addHandler(logging.NullHandler())
-    root_logger.setLevel(level)
 
 
 # 向后兼容：保留 get_console 函数

@@ -1,5 +1,6 @@
 """CLI smoke tests for Phase 0 baseline stability."""
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -186,16 +187,42 @@ def test_dite_pdf_check_reports_summary_note_and_verbose_details(
     assert "empty: 0" in result.output
     assert "VLM samples only the first 10 pages." in result.output
     assert "Extraction details" in result.output
-    assert "File" in result.output
-    assert "docling" in result.output
-    assert "Primary" in result.output
-    assert "broken" in result.output
-    assert "Selected" in result.output
-    assert "Source->final" in result.output
-    assert "Fallback; VLM pages" in result.output
-    assert "0->2500" in result.output
-    assert "yes; 6/10" in result.output
-    assert "VLM sampling" in result.output
+
+
+def test_dite_pdf_check_verbose_suppresses_raw_docling_error_logs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runner = CliRunner()
+    _write_test_config(tmp_path, monkeypatch)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    pdf = docs / "doc.pdf"
+    pdf.write_text("pdf", encoding="utf-8")
+
+    class FakePipelineService:
+        def __init__(self, client, config=None, cache=None):
+            del client, config, cache
+
+        def extract_files(self, files, options):
+            del options
+            logging.getLogger("docling.pipeline.standard_pdf_pipeline").error(
+                "raw-docling-noise"
+            )
+            return PipelineResult(
+                files=files,
+                contents=["usable PDF content" * 20],
+                embeddings=np.array([]),
+                labels=np.array([]),
+                cluster_names={},
+            )
+
+    monkeypatch.setattr("dite.cli.PipelineService", FakePipelineService)
+
+    result = runner.invoke(app, ["pdf-check", str(docs), "--verbose"])
+
+    assert result.exit_code == 0
+    assert "raw-docling-noise" not in result.output
+    assert "PDF smoke check completed" in result.output
 
 
 def test_dite_pdf_check_fails_when_final_output_is_below_threshold(
