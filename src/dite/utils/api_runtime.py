@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -92,6 +93,7 @@ class AsyncRequestRuntime:
         self._config = config
         self._logger = get_logger()
         self._closed = False
+        self._started = False
         self._effective_cluster_workers = _effective_concurrency(
             config.processing.cluster_naming_workers,
             max_connections=config.api.max_connections,
@@ -111,6 +113,9 @@ class AsyncRequestRuntime:
             self._effective_cluster_workers
         )
         self._vlm_global_sem = threading.BoundedSemaphore(self._effective_vlm_workers)
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._client: AsyncOpenAI | None = None
 
     def __enter__(self) -> AsyncRequestRuntime:
         self.start()
@@ -135,23 +140,52 @@ class AsyncRequestRuntime:
     def start(self) -> None:
         if self._closed:
             raise RuntimeError("async request runtime is already closed")
+        if self._started:
+            return
+        loop_ready = threading.Event()
+
+        def _run_loop() -> None:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._loop = loop
+            self._client = _build_async_openai_client(self._config)
+            loop_ready.set()
+            loop.run_forever()
+
+        self._thread = threading.Thread(target=_run_loop, name="dite-async-runtime")
+        self._thread.start()
+        loop_ready.wait()
+        self._started = True
         self._log_effective_limits()
 
     def close(self) -> None:
+        if self._closed:
+            return
         self._closed = True
+        if not self._started:
+            return
+        assert self._loop is not None
+        self._submit_coroutine(self._shutdown_runtime()).result()
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        assert self._thread is not None
+        self._thread.join()
+        self._loop.close()
+        self._loop = None
+        self._thread = None
+        self._client = None
 
     def run_cluster_naming_batch(
         self,
         requests: list[ChatCompletionRequest],
     ) -> list[ChatCompletionResult]:
         self.start()
-        return asyncio.run(
+        return self._submit_coroutine(
             self._run_batch(
                 requests=requests,
                 global_sem=self._cluster_naming_sem,
                 local_limit=None,
             )
-        )
+        ).result()
 
     def run_vlm_page_batch(
         self,
@@ -166,13 +200,13 @@ class AsyncRequestRuntime:
                 max(1, per_document_limit),
                 self._effective_vlm_pages_per_document,
             )
-        return asyncio.run(
+        return self._submit_coroutine(
             self._run_batch(
                 requests=requests,
                 global_sem=self._vlm_global_sem,
                 local_limit=local_limit,
             )
-        )
+        ).result()
 
     def run_image_vlm(self, request: ChatCompletionRequest) -> ChatCompletionResult:
         return self.run_vlm_page_batch([request], per_document_limit=1)[0]
@@ -184,21 +218,18 @@ class AsyncRequestRuntime:
         global_sem: threading.BoundedSemaphore,
         local_limit: int | None,
     ) -> list[ChatCompletionResult]:
-        client = _build_async_openai_client(self._config)
+        assert self._client is not None
         local_sem = asyncio.Semaphore(local_limit) if local_limit is not None else None
-        try:
-            tasks = [
-                self._run_single_request(
-                    client=client,
-                    request=request,
-                    global_sem=global_sem,
-                    local_sem=local_sem,
-                )
-                for request in requests
-            ]
-            return await asyncio.gather(*tasks)
-        finally:
-            await client.close()
+        tasks = [
+            self._run_single_request(
+                client=self._client,
+                request=request,
+                global_sem=global_sem,
+                local_sem=local_sem,
+            )
+            for request in requests
+        ]
+        return await asyncio.gather(*tasks)
 
     async def _run_single_request(
         self,
@@ -251,3 +282,17 @@ class AsyncRequestRuntime:
             f"vlm_pages_per_document={self._effective_vlm_pages_per_document}, "
             f"max_connections={self._config.api.max_connections}"
         )
+
+    def _submit_coroutine(
+        self,
+        coro: asyncio.Future | asyncio.coroutines.Coroutine[Any, Any, Any],
+    ) -> concurrent.futures.Future:
+        assert self._loop is not None
+        return asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+    async def _shutdown_runtime(self) -> None:
+        if self._client is not None:
+            await self._client.close()
+        loop = asyncio.get_running_loop()
+        await loop.shutdown_asyncgens()
+        await loop.shutdown_default_executor(timeout=5.0)

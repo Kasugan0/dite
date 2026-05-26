@@ -48,7 +48,7 @@ def test_async_request_runtime_clamps_effective_limits() -> None:
 def test_async_request_runtime_vlm_batch_respects_global_and_local_limits(
     monkeypatch,
 ) -> None:
-    tracker = {"current": 0, "max": 0, "closed": False}
+    tracker = {"current": 0, "max": 0, "closed": False, "builds": 0}
 
     class _Completions:
         async def create(self, **kwargs):
@@ -78,9 +78,14 @@ def test_async_request_runtime_vlm_batch_respects_global_and_local_limits(
         async def close(self) -> None:
             tracker["closed"] = True
 
+    def fake_build_async_client(config):
+        del config
+        tracker["builds"] += 1
+        return _Client()
+
     monkeypatch.setattr(
         "dite.utils.api_runtime._build_async_openai_client",
-        lambda config: _Client(),
+        fake_build_async_client,
     )
 
     config = Config()
@@ -107,3 +112,209 @@ def test_async_request_runtime_vlm_batch_respects_global_and_local_limits(
     assert all(result.content == "page text" for result in results)
     assert tracker["max"] == 2
     assert tracker["closed"] is True
+    assert tracker["builds"] == 1
+
+
+def test_async_request_runtime_reuses_single_client_across_batches(monkeypatch) -> None:
+    tracker = {"builds": 0, "closed": False}
+
+    class _Completions:
+        async def create(self, **kwargs):
+            del kwargs
+
+            class _Message:
+                content = "ok"
+
+            class _Choice:
+                message = _Message()
+
+            class _Response:
+                choices = [_Choice()]
+
+            return _Response()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+        async def close(self) -> None:
+            tracker["closed"] = True
+
+    def fake_build_async_client(config):
+        del config
+        tracker["builds"] += 1
+        return _Client()
+
+    monkeypatch.setattr(
+        "dite.utils.api_runtime._build_async_openai_client",
+        fake_build_async_client,
+    )
+
+    config = Config()
+    config.api.api_key = "dummy"
+    config.api.base_url = "https://api.example.com/v1"
+    request = ChatCompletionRequest(
+        kwargs={
+            "model": "dummy-model",
+            "messages": [{"role": "user", "content": "page"}],
+        }
+    )
+
+    with AsyncRequestRuntime(config) as runtime:
+        first = runtime.run_vlm_page_batch([request], per_document_limit=1)
+        second = runtime.run_cluster_naming_batch([request])
+
+    assert first[0].content == "ok"
+    assert second[0].content == "ok"
+    assert tracker["builds"] == 1
+    assert tracker["closed"] is True
+
+
+def test_async_request_runtime_start_is_idempotent(monkeypatch) -> None:
+    tracker = {"builds": 0, "closed": False}
+
+    class _Client:
+        class _Chat:
+            class _Completions:
+                async def create(self, **kwargs):
+                    del kwargs
+                    raise AssertionError("create should not run")
+
+            completions = _Completions()
+
+        chat = _Chat()
+
+        async def close(self) -> None:
+            tracker["closed"] = True
+
+    def fake_build_async_client(config):
+        del config
+        tracker["builds"] += 1
+        return _Client()
+
+    monkeypatch.setattr(
+        "dite.utils.api_runtime._build_async_openai_client",
+        fake_build_async_client,
+    )
+
+    config = Config()
+    config.api.api_key = "dummy"
+    config.api.base_url = "https://api.example.com/v1"
+
+    runtime = AsyncRequestRuntime(config)
+    runtime.start()
+    runtime.start()
+    runtime.close()
+
+    assert tracker["builds"] == 1
+    assert tracker["closed"] is True
+
+
+def test_async_request_runtime_close_is_idempotent(monkeypatch) -> None:
+    tracker = {"builds": 0, "closed": 0}
+
+    class _Client:
+        class _Chat:
+            class _Completions:
+                async def create(self, **kwargs):
+                    del kwargs
+                    raise AssertionError("create should not run")
+
+            completions = _Completions()
+
+        chat = _Chat()
+
+        async def close(self) -> None:
+            tracker["closed"] += 1
+
+    def fake_build_async_client(config):
+        del config
+        tracker["builds"] += 1
+        return _Client()
+
+    monkeypatch.setattr(
+        "dite.utils.api_runtime._build_async_openai_client",
+        fake_build_async_client,
+    )
+
+    config = Config()
+    config.api.api_key = "dummy"
+    config.api.base_url = "https://api.example.com/v1"
+
+    runtime = AsyncRequestRuntime(config)
+    runtime.start()
+    runtime.close()
+    runtime.close()
+
+    assert tracker["builds"] == 1
+    assert tracker["closed"] == 1
+    assert runtime._loop is None
+    assert runtime._thread is None
+    assert runtime._client is None
+
+
+def test_async_request_runtime_shutdown_runtime_closes_executor(monkeypatch) -> None:
+    runtime = AsyncRequestRuntime(Config())
+    calls: list[tuple[str, float | None]] = []
+
+    class _Client:
+        async def close(self) -> None:
+            calls.append(("client_close", None))
+
+    class _Loop:
+        async def shutdown_asyncgens(self) -> None:
+            calls.append(("shutdown_asyncgens", None))
+
+        async def shutdown_default_executor(self, timeout=None) -> None:
+            calls.append(("shutdown_default_executor", timeout))
+
+    runtime._client = _Client()
+    loop = _Loop()
+
+    monkeypatch.setattr("asyncio.get_running_loop", lambda: loop)
+
+    asyncio.run(runtime._shutdown_runtime())
+
+    assert calls == [
+        ("client_close", None),
+        ("shutdown_asyncgens", None),
+        ("shutdown_default_executor", 5.0),
+    ]
+
+
+def test_async_request_runtime_cannot_restart_after_close(monkeypatch) -> None:
+    class _Client:
+        class _Chat:
+            class _Completions:
+                async def create(self, **kwargs):
+                    del kwargs
+                    raise AssertionError("create should not run")
+
+            completions = _Completions()
+
+        chat = _Chat()
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "dite.utils.api_runtime._build_async_openai_client",
+        lambda config: _Client(),
+    )
+
+    config = Config()
+    config.api.api_key = "dummy"
+    config.api.base_url = "https://api.example.com/v1"
+
+    runtime = AsyncRequestRuntime(config)
+    runtime.start()
+    runtime.close()
+
+    try:
+        runtime.start()
+    except RuntimeError as exc:
+        assert str(exc) == "async request runtime is already closed"
+    else:
+        raise AssertionError("runtime.start() should fail after close")
