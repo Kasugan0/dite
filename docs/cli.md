@@ -134,6 +134,18 @@
 - 旧的 `cluster-ab` 已被移除，避免把半成品实验接口继续暴露给普通用户。
 - 输入模式对比、参数 sweep 和文件级 diff 只通过仓库内的内部实验工具执行。
 
+当前内部实验入口是：
+
+- `python tools/cluster_experiments.py compare-inputs <folder>`
+- `python tools/cluster_experiments.py sweep <folder>`
+
+当前实验工具支持：
+
+- `--output`
+- `--no-cache`
+- `--no-knn-repair`
+- `sweep --extended`
+
 执行方式：
 
 - 预览模式只显示计划。

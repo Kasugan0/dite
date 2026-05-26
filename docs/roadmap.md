@@ -303,8 +303,9 @@ archive 里最重要的教训，不是“应该再做更多功能”，而是下
 当前现实：
 
 - 当前主路径是“每个文件产出一份最终文本，再生成一个 embedding，再交给 HDBSCAN”。
-- 默认聚类参数是 `min_cluster_size=2`、`min_samples=1`、`cluster_selection_method="eom"`。
+- 默认聚类参数是 `min_cluster_size=3`、`min_samples=2`、`cluster_selection_epsilon=0.25`、`cluster_selection_method="eom"`。
 - k-NN 修复只处理噪音点，不会把两个已经成形的非噪音簇重新并回去。
+- 当前已经有一轮受限的小簇级再合并，但它只覆盖 source 小簇，只看簇质心。
 - 同名簇合并发生在命名之后，而且当前 CLI 明确关闭它。
 
 待决问题：

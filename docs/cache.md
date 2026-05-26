@@ -95,10 +95,17 @@ embedding 版本不是单个固定常量，而是由两部分拼起来的：
 当前输入版本常量是：
 
 - `filename-smart-content-normalized-v2`
+- `content-only-normalized-v1`
 
 所以一个实际的 embedding 缓存版本长得像：
 
 - `<embedding-model>|input=filename-smart-content-normalized-v2`
+- `<embedding-model>|input=content-only-normalized-v1`
+
+这意味着当前 embedding 缓存不仅区分模型名，还区分两种输入模式：
+
+- `with_filename`
+- `content_only`
 
 ## 读取路径
 

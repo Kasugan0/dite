@@ -101,19 +101,31 @@ YAML 中的字符串值支持环境变量展开。
 - `cluster_selection_method`
 - `knn_k`
 - `knn_distance_threshold`
+- `small_cluster_merge_enabled`
+- `small_cluster_merge_max_size`
+- `small_cluster_merge_cosine_threshold`
 
 这些参数控制 HDBSCAN 聚类，以及可选的 k-NN 噪音修复。
 
+需要特别区分的一点：
+
+- `allow_single_cluster` 当前不是全局配置项。
+- `cluster_pca_components` 当前也不是全局配置项。
+- 它们只存在于实验路径的 `PipelineOptions` 和内部工具里。
+
 当前默认值是：
 
-- `min_cluster_size=2`
-- `min_samples=1`
-- `cluster_selection_epsilon=0.0`
+- `min_cluster_size=3`
+- `min_samples=2`
+- `cluster_selection_epsilon=0.25`
 - `cluster_selection_method="eom"`
 - `knn_k=3`
 - `knn_distance_threshold=None`
+- `small_cluster_merge_enabled=true`
+- `small_cluster_merge_max_size=4`
+- `small_cluster_merge_cosine_threshold=0.92`
 
-这些默认值目前对“小簇成立”相对宽松，但 `eom` 仍然比 `leaf` 更保守。参数含义、已知问题和计划中的收紧方向，见 `docs/clustering.md`。
+这些默认值已经比早期版本更保守，并且允许对小簇做一轮受限的簇间再判定。参数含义、已知问题和计划中的后续实验方向，见 `docs/clustering.md`。
 
 ## `processing`
 
