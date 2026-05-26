@@ -146,6 +146,8 @@
 - `--no-knn-repair`
 - `sweep --extended`
 
+更完整的真实测试与实验顺序，见 `docs/experiments.md`。
+
 执行方式：
 
 - 预览模式只显示计划。

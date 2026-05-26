@@ -30,6 +30,7 @@ DITE 是一个面向本地文件夹的 CLI 文档聚类工具。它会扫描目�
 - `docs/roadmap.md`
 - `docs/archive-review.md`
 - `docs/validation.md`
+- `docs/experiments.md`
 
 ## 今天的 DITE 还不能做什么
 

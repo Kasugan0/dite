@@ -366,6 +366,8 @@ validation/
 
 每次实验按固定顺序走，不跳步。
 
+如果你需要一份可直接执行、包含 `tee` 日志保存建议的操作手册，见 `docs/experiments.md`。
+
 ### 阶段 1：E2E smoke
 
 目的：
