@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from dite.config import Config
-from dite.extractors.base import ExtractionResult
-from dite.extractors.pdf_policy import (
+from dite.app.config import Config
+from dite.io.base import ExtractionResult
+from dite.io.pdf.policy import (
     PDF_VLM_SAMPLE_PAGE_LIMIT,
     build_pdf_decision,
 )

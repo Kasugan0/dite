@@ -10,40 +10,41 @@ import numpy as np
 import pytest
 from openai import APIStatusError
 
-from dite.cache import FileCache
-from dite.config import (
+from dite.app.config import (
     ChatCompletionProfileConfig,
     Config,
     RequestProfilesConfig,
 )
-from dite.core.clusterer import (
+from dite.app.i18n import set_locale
+from dite.cache import FileCache
+from dite.cluster.api import (
     ClusterMetrics,
     ClusterResult,
     cluster_documents,
     repair_noise_with_knn,
 )
-from dite.core.embedder import get_embedding_cache_version
-from dite.core.pipeline import (
+from dite.doc.embed import get_embedding_cache_version
+from dite.flow.api import (
     ExtractionFileReport,
+    ExtractionSummary,
     ExtractionSummaryDelta,
     ExtractionWorkResult,
     PipelineOptions,
     PipelineService,
 )
-from dite.core.scanner import scan_files
-from dite.extractors.base import ExtractionResult
-from dite.extractors.docling import DoclingExtractor
-from dite.extractors.pdf_finalize import PDFCacheWriteIntent
-from dite.extractors.router import (
+from dite.flow.scan import scan_files
+from dite.io.base import ExtractionResult
+from dite.io.docling import DoclingExtractor
+from dite.io.pdf.final import PDFCacheWriteIntent
+from dite.io.route import (
     PDF_VLM_SAMPLE_PAGE_LIMIT,
     PDFProfile,
     ResolvedExtraction,
     VLMSamplingResult,
 )
-from dite.i18n import set_locale
-from dite.utils.api_runtime import ChatCompletionResult
-from dite.utils.hashing import compute_file_hash
-from dite.utils.logging import setup_logging
+from dite.util.api import ChatCompletionResult
+from dite.util.hash import compute_file_hash
+from dite.util.log import setup_logging
 
 TEST_CORPUS_DIR = Path(__file__).resolve().parents[1] / "docs" / "test" / "valid"
 
@@ -165,16 +166,16 @@ def test_pipeline_reuses_vlm_cache_across_runs(tmp_path: Path, monkeypatch) -> N
         fake_extract_docling_pdf_primary_result,
     )
     monkeypatch.setattr(
-        "dite.extractors.router.needs_vlm_fallback", fake_needs_vlm_fallback
+        "dite.io.route.needs_vlm_fallback", fake_needs_vlm_fallback
     )
     monkeypatch.setattr(
-        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        "dite.io.route._extract_pdf_with_vlm_sampling",
         fake_extract_with_vlm_sampling,
     )
-    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
-    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr("dite.flow.api.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.flow.api.cluster_documents", fake_cluster_documents)
     monkeypatch.setattr(
-        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+        "dite.flow.api.generate_all_cluster_names", fake_generate_all_cluster_names
     )
 
     options = PipelineOptions(
@@ -229,10 +230,10 @@ def test_extract_files_stops_before_embedding_and_clustering(
         "_extract_docling_pdf_primary_result",
         fake_extract_docling_pdf_primary_result,
     )
-    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fail_get_embeddings)
-    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fail_cluster_documents)
+    monkeypatch.setattr("dite.flow.api.get_embeddings", fail_get_embeddings)
+    monkeypatch.setattr("dite.flow.api.cluster_documents", fail_cluster_documents)
     monkeypatch.setattr(
-        "dite.core.pipeline.generate_all_cluster_names",
+        "dite.flow.api.generate_all_cluster_names",
         fail_generate_all_cluster_names,
     )
 
@@ -271,11 +272,11 @@ def test_extract_files_can_disable_vlm_api(tmp_path: Path, monkeypatch) -> None:
         fake_extract_docling_pdf_primary_result,
     )
     monkeypatch.setattr(
-        "dite.extractors.router.needs_vlm_fallback",
+        "dite.io.route.needs_vlm_fallback",
         lambda *args, **kwargs: True,
     )
     monkeypatch.setattr(
-        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        "dite.io.route._extract_pdf_with_vlm_sampling",
         fake_extract_with_vlm_sampling,
     )
 
@@ -367,7 +368,7 @@ def test_pipeline_service_creates_fresh_registry_per_extraction_batch(
         fake_extract_primary_result,
     )
     monkeypatch.setattr(
-        "dite.core.pipeline.resolve_document_extraction",
+        "dite.flow.api.resolve_document_extraction",
         fake_resolve_document_extraction,
     )
 
@@ -436,7 +437,7 @@ def test_extract_files_defers_cache_size_enforcement_until_batch_end(
         return 0
 
     monkeypatch.setattr(
-        "dite.extractors.router.extract_document", fake_extract_document
+        "dite.io.route.extract_document", fake_extract_document
     )
     monkeypatch.setattr(FileCache, "save", fake_save)
     monkeypatch.setattr(FileCache, "enforce_size_limit", fake_enforce)
@@ -569,7 +570,7 @@ def test_docling_pdf_workers_limit_concurrent_docling_subprocesses(monkeypatch) 
         return ExtractionResult(content="ok", success=True, extractor="docling")
 
     monkeypatch.setattr(
-        "dite.core.pipeline.extract_docling_pdf_in_subprocess",
+        "dite.flow.api.extract_docling_pdf_in_subprocess",
         fake_subprocess,
     )
 
@@ -603,7 +604,7 @@ def test_extract_primary_result_routes_pdf_docling_to_subprocess(
     extractor = DoclingExtractor(pdf_timeout_sec=1.0)
 
     monkeypatch.setattr(
-        "dite.core.pipeline.get_extractor",
+        "dite.flow.api.get_extractor",
         lambda *args, **kwargs: extractor,
     )
 
@@ -641,7 +642,7 @@ def test_extract_primary_result_routes_non_pdf_through_router(
     calls: dict[str, object] = {}
 
     monkeypatch.setattr(
-        "dite.core.pipeline.get_extractor",
+        "dite.flow.api.get_extractor",
         lambda *args, **kwargs: object(),
     )
 
@@ -653,7 +654,7 @@ def test_extract_primary_result_routes_non_pdf_through_router(
         return ExtractionResult(content="text-result", success=True, extractor="text")
 
     monkeypatch.setattr(
-        "dite.extractors.router.extract_document",
+        "dite.io.route.extract_document",
         fake_extract_document,
     )
 
@@ -765,16 +766,16 @@ def test_pipeline_reuses_vlm_cache_by_hash_across_paths(
         fake_extract_docling_pdf_primary_result,
     )
     monkeypatch.setattr(
-        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        "dite.io.route._extract_pdf_with_vlm_sampling",
         fake_extract_with_vlm_sampling,
     )
     monkeypatch.setattr(
-        "dite.extractors.router.needs_vlm_fallback", fake_needs_vlm_fallback
+        "dite.io.route.needs_vlm_fallback", fake_needs_vlm_fallback
     )
-    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
-    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr("dite.flow.api.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.flow.api.cluster_documents", fake_cluster_documents)
     monkeypatch.setattr(
-        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+        "dite.flow.api.generate_all_cluster_names", fake_generate_all_cluster_names
     )
 
     result = service.run(
@@ -886,16 +887,16 @@ def test_pipeline_prefers_vlm_when_docling_content_is_glyph_noise(
         fake_extract_docling_pdf_primary_result,
     )
     monkeypatch.setattr(
-        "dite.extractors.router.needs_vlm_fallback", fake_needs_vlm_fallback
+        "dite.io.route.needs_vlm_fallback", fake_needs_vlm_fallback
     )
     monkeypatch.setattr(
-        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        "dite.io.route._extract_pdf_with_vlm_sampling",
         fake_extract_with_vlm_sampling,
     )
-    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
-    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr("dite.flow.api.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.flow.api.cluster_documents", fake_cluster_documents)
     monkeypatch.setattr(
-        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+        "dite.flow.api.generate_all_cluster_names", fake_generate_all_cluster_names
     )
 
     result = service.run(
@@ -956,7 +957,7 @@ def test_extract_files_does_not_cache_failed_vlm_fallback(
         fake_extract_docling_pdf_primary_result,
     )
     monkeypatch.setattr(
-        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        "dite.io.route._extract_pdf_with_vlm_sampling",
         fake_extract_with_vlm_sampling,
     )
     monkeypatch.setattr(cache, "update_vlm_content", fake_update_vlm_content)
@@ -1062,7 +1063,7 @@ def test_extract_files_uses_explicit_cache_write_intent_to_skip_vlm_cache_update
         fake_extract_primary_result,
     )
     monkeypatch.setattr(
-        "dite.core.pipeline.resolve_document_extraction",
+        "dite.flow.api.resolve_document_extraction",
         fake_resolve_document_extraction,
     )
     monkeypatch.setattr(cache, "update_vlm_content", fake_update_vlm_content)
@@ -1162,7 +1163,7 @@ def test_extract_files_uses_explicit_cache_write_intent_to_update_vlm_cache(
         fake_extract_primary_result,
     )
     monkeypatch.setattr(
-        "dite.core.pipeline.resolve_document_extraction",
+        "dite.flow.api.resolve_document_extraction",
         fake_resolve_document_extraction,
     )
     monkeypatch.setattr(cache, "update_vlm_content", fake_update_vlm_content)
@@ -1230,10 +1231,10 @@ def test_pipeline_real_scan_extract_and_cache_hits(tmp_path: Path, monkeypatch) 
             metrics=ClusterMetrics(),
         )
 
-    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
-    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr("dite.flow.api.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.flow.api.cluster_documents", fake_cluster_documents)
     monkeypatch.setattr(
-        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+        "dite.flow.api.generate_all_cluster_names", fake_generate_all_cluster_names
     )
 
     options = PipelineOptions(
@@ -1378,13 +1379,13 @@ def test_pipeline_deduplicates_same_hash_before_vlm_embedding_and_clustering(
         fake_extract_primary_result,
     )
     monkeypatch.setattr(
-        "dite.core.pipeline.resolve_document_extraction",
+        "dite.flow.api.resolve_document_extraction",
         fake_resolve_document_extraction,
     )
-    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
-    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr("dite.flow.api.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.flow.api.cluster_documents", fake_cluster_documents)
     monkeypatch.setattr(
-        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+        "dite.flow.api.generate_all_cluster_names", fake_generate_all_cluster_names
     )
 
     result = service.run(
@@ -1467,10 +1468,10 @@ def test_pipeline_reuses_hash_cached_embedding_for_duplicate_canonical(
         assert files == [canonical]
         return make_cluster_result(result, cluster_names={0: "Cached Duplicate"})
 
-    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fail_get_embeddings)
-    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr("dite.flow.api.get_embeddings", fail_get_embeddings)
+    monkeypatch.setattr("dite.flow.api.cluster_documents", fake_cluster_documents)
     monkeypatch.setattr(
-        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+        "dite.flow.api.generate_all_cluster_names", fake_generate_all_cluster_names
     )
 
     result = service.run(
@@ -1559,10 +1560,10 @@ def test_pipeline_expands_repaired_noise_count_to_duplicate_aliases(
         assert files == [duplicate_a, noise]
         return make_cluster_result(result, cluster_names={0: "Repaired Duplicate"})
 
-    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
-    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr("dite.flow.api.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.flow.api.cluster_documents", fake_cluster_documents)
     monkeypatch.setattr(
-        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+        "dite.flow.api.generate_all_cluster_names", fake_generate_all_cluster_names
     )
 
     result = service.run(
@@ -1655,10 +1656,10 @@ def test_pipeline_accumulates_small_and_name_cluster_merge_counts(
             ),
         )
 
-    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
-    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr("dite.flow.api.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.flow.api.cluster_documents", fake_cluster_documents)
     monkeypatch.setattr(
-        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+        "dite.flow.api.generate_all_cluster_names", fake_generate_all_cluster_names
     )
 
     result = service.run(
@@ -1759,7 +1760,7 @@ def test_extract_files_locks_down_failure_corpus_classification_baseline(
         fake_extract_primary_result,
     )
     monkeypatch.setattr(
-        "dite.core.pipeline.resolve_document_extraction",
+        "dite.flow.api.resolve_document_extraction",
         fake_resolve_document_extraction,
     )
 
@@ -1868,7 +1869,7 @@ def test_extract_files_detects_real_duplicate_group_without_cache(
         fake_extract_primary_result,
     )
     monkeypatch.setattr(
-        "dite.core.pipeline.resolve_document_extraction",
+        "dite.flow.api.resolve_document_extraction",
         fake_resolve_document_extraction,
     )
 
@@ -1946,10 +1947,10 @@ def test_pipeline_recomputes_embedding_when_model_changes(
             metrics=ClusterMetrics(),
         )
 
-    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
-    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr("dite.flow.api.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.flow.api.cluster_documents", fake_cluster_documents)
     monkeypatch.setattr(
-        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+        "dite.flow.api.generate_all_cluster_names", fake_generate_all_cluster_names
     )
 
     result = service.run(
@@ -2035,10 +2036,10 @@ def test_pipeline_recomputes_embedding_when_input_version_changes(
             metrics=ClusterMetrics(),
         )
 
-    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
-    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr("dite.flow.api.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.flow.api.cluster_documents", fake_cluster_documents)
     monkeypatch.setattr(
-        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+        "dite.flow.api.generate_all_cluster_names", fake_generate_all_cluster_names
     )
 
     result = service.run(
@@ -2132,12 +2133,12 @@ def test_pipeline_uses_smart_content_excerpt_for_embedding(
         fake_extract_docling_pdf_primary_result,
     )
     monkeypatch.setattr(
-        "dite.extractors.router.needs_vlm_fallback", lambda *args, **kwargs: False
+        "dite.io.route.needs_vlm_fallback", lambda *args, **kwargs: False
     )
-    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
-    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr("dite.flow.api.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.flow.api.cluster_documents", fake_cluster_documents)
     monkeypatch.setattr(
-        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+        "dite.flow.api.generate_all_cluster_names", fake_generate_all_cluster_names
     )
 
     service.run(
@@ -2231,7 +2232,7 @@ def test_extract_files_preserves_final_length_separately_from_truncated_contents
         fake_extract_primary_result,
     )
     monkeypatch.setattr(
-        "dite.core.pipeline.resolve_document_extraction",
+        "dite.flow.api.resolve_document_extraction",
         fake_resolve_document_extraction,
     )
 
@@ -2343,7 +2344,7 @@ def test_repair_noise_with_knn_returns_unchanged_without_core_cluster() -> None:
 def test_cluster_documents_repairs_all_noise_with_similarity_fallback(
     monkeypatch,
 ) -> None:
-    from dite.core import clusterer
+    from dite.cluster import api as clusterer
 
     class _FakeHDBSCAN:
         def __init__(self, **kwargs) -> None:
@@ -2379,7 +2380,7 @@ def test_cluster_documents_repairs_all_noise_with_similarity_fallback(
 def test_cluster_documents_keeps_all_noise_when_repair_disabled(
     monkeypatch,
 ) -> None:
-    from dite.core import clusterer
+    from dite.cluster import api as clusterer
 
     class _FakeHDBSCAN:
         def __init__(self, **kwargs) -> None:
@@ -2405,8 +2406,8 @@ def test_cluster_documents_keeps_all_noise_when_repair_disabled(
 def test_cluster_documents_uses_clustering_config_without_knn_when_disabled(
     monkeypatch,
 ) -> None:
-    from dite.core import clusterer
-    from dite.core.clusterer import cluster_documents
+    from dite.cluster import api as clusterer
+    from dite.cluster.api import cluster_documents
 
     captured: dict[str, object] = {}
 
@@ -2466,8 +2467,8 @@ def test_cluster_documents_uses_clustering_config_without_knn_when_disabled(
 
 
 def test_cluster_documents_passes_knn_overrides_to_repair(monkeypatch) -> None:
-    from dite.core import clusterer
-    from dite.core.clusterer import cluster_documents
+    from dite.cluster import api as clusterer
+    from dite.cluster.api import cluster_documents
 
     captured: dict[str, object] = {}
 
@@ -2523,7 +2524,7 @@ def test_cluster_documents_passes_knn_overrides_to_repair(monkeypatch) -> None:
 
 
 def test_cluster_documents_normalizes_before_hdbscan(monkeypatch) -> None:
-    from dite.core import clusterer
+    from dite.cluster import api as clusterer
 
     captured: dict[str, np.ndarray] = {}
 
@@ -2556,8 +2557,8 @@ def test_cluster_documents_normalizes_before_hdbscan(monkeypatch) -> None:
 def test_cluster_documents_merges_small_cluster_by_similarity(
     monkeypatch,
 ) -> None:
-    from dite.core import clusterer
-    from dite.core.clusterer import ClusterMetrics, cluster_documents
+    from dite.cluster import api as clusterer
+    from dite.cluster.api import ClusterMetrics, cluster_documents
 
     class _FakeHDBSCAN:
         def __init__(self, **kwargs) -> None:
@@ -2609,8 +2610,8 @@ def test_cluster_documents_merges_small_cluster_by_similarity(
 def test_cluster_documents_keeps_small_cluster_when_similarity_low(
     monkeypatch,
 ) -> None:
-    from dite.core import clusterer
-    from dite.core.clusterer import cluster_documents
+    from dite.cluster import api as clusterer
+    from dite.cluster.api import cluster_documents
 
     class _FakeHDBSCAN:
         def __init__(self, **kwargs) -> None:
@@ -2655,7 +2656,7 @@ def test_cluster_documents_keeps_small_cluster_when_similarity_low(
 
 
 def test_merge_small_clusters_by_similarity_skips_large_source_clusters() -> None:
-    from dite.core.clusterer import merge_small_clusters_by_similarity
+    from dite.cluster.api import merge_small_clusters_by_similarity
 
     labels, merged_count, _merge_events, _skip_events, _max_similarity = (
         merge_small_clusters_by_similarity(
@@ -2678,7 +2679,7 @@ def test_merge_small_clusters_by_similarity_skips_large_source_clusters() -> Non
 
 
 def test_merge_small_clusters_by_similarity_prefers_larger_target_on_tie() -> None:
-    from dite.core.clusterer import merge_small_clusters_by_similarity
+    from dite.cluster.api import merge_small_clusters_by_similarity
 
     labels, merged_count, _merge_events, _skip_events, _max_similarity = (
         merge_small_clusters_by_similarity(
@@ -2701,7 +2702,7 @@ def test_merge_small_clusters_by_similarity_prefers_larger_target_on_tie() -> No
 
 
 def test_cluster_documents_merges_small_cluster_with_real_hdbscan_defaults() -> None:
-    from dite.core.clusterer import cluster_documents
+    from dite.cluster.api import cluster_documents
 
     config = Config()
     config.clustering.min_cluster_size = 2
@@ -2732,7 +2733,305 @@ def test_cluster_documents_merges_small_cluster_with_real_hdbscan_defaults() -> 
     )
     assert result.metrics.initial_clusters >= 2
     assert result.metrics.small_clusters_merged >= 0
-    assert len(set(result.labels)) <= result.metrics.initial_clusters + 1
+
+
+def test_pipeline_candidate_components_can_merge_canonical_labels(
+    tmp_path: Path, monkeypatch
+) -> None:
+    doc_a = tmp_path / "linear-algebra-a.txt"
+    doc_b = tmp_path / "linear-algebra-b.txt"
+    doc_c = tmp_path / "minecraft-guide.txt"
+    for path in (doc_a, doc_b, doc_c):
+        path.write_text("payload", encoding="utf-8")
+
+    service = PipelineService(client=object(), config=Config(), cache=None)
+
+    def fake_extract_contents(files, options):
+        del options
+        contents = [
+            "Linear Algebra Notes",
+            "Linear Algebra Notes",
+            "Minecraft Guide",
+        ]
+        file_hashes = [f"hash-{index}" for index, _ in enumerate(files)]
+        reports = [
+            ExtractionFileReport(
+                file=file,
+                primary_extractor="text",
+                primary_success=True,
+                primary_error=None,
+                source_profile=None,
+                source_effective_length=len(content),
+                selected_source="primary",
+                final_effective_length=len(content),
+                excerpt_was_truncated=False,
+                vlm_api_page_calls=0,
+                sample_page_limit=None,
+                file_hash=file_hashes[index],
+            )
+            for index, (file, content) in enumerate(zip(files, contents, strict=True))
+        ]
+        return contents, file_hashes, ExtractionSummary(), reports
+
+    monkeypatch.setattr(service, "_extract_contents", fake_extract_contents)
+    monkeypatch.setattr(
+        service,
+        "_vectorize",
+        lambda files, file_hashes, contents, options: np.array(
+            [[1.0, 0.0], [0.95, 0.05], [0.0, 1.0]], dtype=np.float32
+        ),
+    )
+    monkeypatch.setattr(
+        "dite.flow.api.cluster_documents",
+        lambda embeddings, **kwargs: make_cluster_result(
+            [0, 1, 2],
+            metrics=ClusterMetrics(initial_clusters=3),
+        ),
+    )
+    monkeypatch.setattr(
+        "dite.flow.api.generate_all_cluster_names",
+        lambda client, result, contents, files, **kwargs: make_cluster_result(
+            result,
+            cluster_names={0: "Linear Algebra", 2: "Minecraft"},
+        ),
+    )
+
+    result = service.run(
+        tmp_path,
+        PipelineOptions(use_cache=False, use_embedding_cache=False),
+    )
+
+    assert len(result.candidate_components) == 1
+    assert result.candidate_components[0].member_file_ids == [
+        str(doc_a),
+        str(doc_b),
+    ]
+    assert result.labels.tolist() == [0, 0, 2]
+    assert len(set(result.labels)) <= result.cluster_metrics.initial_clusters + 1
+    assert len(result.document_features) == 3
+    assert result.document_features[0].path == doc_a
+    assert result.document_features[1].path == doc_b
+    assert result.document_features[2].path == doc_c
+
+
+def test_pipeline_graph_cluster_mode_uses_candidate_components_as_clusters(
+    tmp_path: Path, monkeypatch
+) -> None:
+    doc_a = tmp_path / "linear-algebra-a.txt"
+    doc_b = tmp_path / "linear-algebra-b.txt"
+    doc_c = tmp_path / "minecraft-guide.txt"
+    for path in (doc_a, doc_b, doc_c):
+        path.write_text("payload", encoding="utf-8")
+
+    service = PipelineService(client=object(), config=Config(), cache=None)
+
+    def fake_extract_contents(files, options):
+        del options
+        contents = [
+            "Linear Algebra Notes",
+            "Linear Algebra Notes",
+            "Minecraft Guide",
+        ]
+        file_hashes = [f"hash-{index}" for index, _ in enumerate(files)]
+        reports = [
+            ExtractionFileReport(
+                file=file,
+                primary_extractor="text",
+                primary_success=True,
+                primary_error=None,
+                source_profile=None,
+                source_effective_length=len(content),
+                selected_source="primary",
+                final_effective_length=len(content),
+                excerpt_was_truncated=False,
+                vlm_api_page_calls=0,
+                sample_page_limit=None,
+                file_hash=file_hashes[index],
+            )
+            for index, (file, content) in enumerate(zip(files, contents, strict=True))
+        ]
+        return contents, file_hashes, ExtractionSummary(), reports
+
+    monkeypatch.setattr(service, "_extract_contents", fake_extract_contents)
+    monkeypatch.setattr(
+        service,
+        "_vectorize",
+        lambda files, file_hashes, contents, options: np.array(
+            [[1.0, 0.0], [0.95, 0.05], [0.0, 1.0]], dtype=np.float32
+        ),
+    )
+    monkeypatch.setattr(
+        "dite.flow.api.generate_all_cluster_names",
+        lambda client, result, contents, files, **kwargs: make_cluster_result(
+            result,
+            cluster_names={0: "Linear Algebra"},
+        ),
+    )
+
+    result = service.run(
+        tmp_path,
+        PipelineOptions(
+            use_cache=False,
+            use_embedding_cache=False,
+            cluster_mode="graph",
+        ),
+    )
+
+    assert result.labels.tolist() == [0, 0, -1]
+    assert result.cluster_metrics.initial_clusters == 1
+    assert result.cluster_metrics.initial_noise == 1
+
+
+def test_pipeline_graph_cluster_mode_falls_back_for_unconnected_tail(
+    tmp_path: Path, monkeypatch
+) -> None:
+    doc_a = tmp_path / "linear-algebra-a.txt"
+    doc_b = tmp_path / "linear-algebra-b.txt"
+    doc_c = tmp_path / "numerical-analysis.txt"
+    doc_d = tmp_path / "finance.txt"
+    for path in (doc_a, doc_b, doc_c, doc_d):
+        path.write_text("payload", encoding="utf-8")
+
+    service = PipelineService(client=object(), config=Config(), cache=None)
+
+    def fake_extract_contents(files, options):
+        del options
+        contents = [
+            "Linear Algebra Notes",
+            "Linear Algebra Notes",
+            "Numerical analysis and interpolation",
+            "Finance and valuation notes",
+        ]
+        file_hashes = [f"hash-{index}" for index, _ in enumerate(files)]
+        reports = [
+            ExtractionFileReport(
+                file=file,
+                primary_extractor="text",
+                primary_success=True,
+                primary_error=None,
+                source_profile=None,
+                source_effective_length=len(content),
+                selected_source="primary",
+                final_effective_length=len(content),
+                excerpt_was_truncated=False,
+                vlm_api_page_calls=0,
+                sample_page_limit=None,
+                file_hash=file_hashes[index],
+            )
+            for index, (file, content) in enumerate(zip(files, contents, strict=True))
+        ]
+        return contents, file_hashes, ExtractionSummary(), reports
+
+    monkeypatch.setattr(service, "_extract_contents", fake_extract_contents)
+    monkeypatch.setattr(
+        service,
+        "_vectorize",
+        lambda files, file_hashes, contents, options: np.array(
+            [
+                [1.0, 0.0],
+                [0.95, 0.05],
+                [0.0, 1.0],
+                [0.1, 0.9],
+            ],
+            dtype=np.float32,
+        ),
+    )
+
+    def fake_cluster_documents(embeddings, **kwargs):
+        # Only the two tail docs should fall back into this call.
+        assert embeddings.shape[0] == 2
+        return make_cluster_result(
+            [0, 0],
+            metrics=ClusterMetrics(initial_clusters=1),
+        )
+
+    monkeypatch.setattr("dite.flow.api.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr(
+        "dite.flow.api.generate_all_cluster_names",
+        lambda client, result, contents, files, **kwargs: make_cluster_result(
+            result,
+            cluster_names={0: "Linear Algebra", 1: "Numerical Finance"},
+        ),
+    )
+
+    result = service.run(
+        tmp_path,
+        PipelineOptions(
+            use_cache=False,
+            use_embedding_cache=False,
+            cluster_mode="graph",
+        ),
+    )
+
+    assert result.labels.tolist() == [0, 0, 1, 1]
+
+
+def test_pipeline_adjudication_merge_edge_can_merge_labels(
+    tmp_path: Path, monkeypatch
+) -> None:
+    doc_a = tmp_path / "alpha.txt"
+    doc_b = tmp_path / "beta.txt"
+    for path in (doc_a, doc_b):
+        path.write_text("payload", encoding="utf-8")
+
+    service = PipelineService(client=object(), config=Config(), cache=None)
+
+    def fake_extract_contents(files, options):
+        del options
+        contents = [
+            "Rust ownership and borrowing",
+            "Rust ownership with lifetimes",
+        ]
+        file_hashes = [f"hash-{index}" for index, _ in enumerate(files)]
+        reports = [
+            ExtractionFileReport(
+                file=file,
+                primary_extractor="text",
+                primary_success=True,
+                primary_error=None,
+                source_profile=None,
+                source_effective_length=len(content),
+                selected_source="primary",
+                final_effective_length=len(content),
+                excerpt_was_truncated=False,
+                vlm_api_page_calls=0,
+                sample_page_limit=None,
+                file_hash=file_hashes[index],
+            )
+            for index, (file, content) in enumerate(zip(files, contents, strict=True))
+        ]
+        return contents, file_hashes, ExtractionSummary(), reports
+
+    monkeypatch.setattr(service, "_extract_contents", fake_extract_contents)
+    monkeypatch.setattr(
+        service,
+        "_vectorize",
+        lambda files, file_hashes, contents, options: np.array(
+            [[1.0, 0.0], [0.93, 0.07]], dtype=np.float32
+        ),
+    )
+    monkeypatch.setattr(
+        "dite.flow.api.cluster_documents",
+        lambda embeddings, **kwargs: make_cluster_result(
+            [0, 1],
+            metrics=ClusterMetrics(initial_clusters=2),
+        ),
+    )
+    monkeypatch.setattr(
+        "dite.flow.api.generate_all_cluster_names",
+        lambda client, result, contents, files, **kwargs: make_cluster_result(
+            result,
+            cluster_names={0: "Rust", 1: "Rust"},
+        ),
+    )
+
+    result = service.run(
+        tmp_path,
+        PipelineOptions(use_cache=False, use_embedding_cache=False),
+    )
+
+    assert result.adjudication_decisions
+    assert result.labels.tolist() == [0, 0]
 
 
 def test_scan_files_excludes_target_directory(tmp_path: Path) -> None:
@@ -2856,14 +3155,14 @@ def test_pipeline_verbose_logs_include_extraction_summary(
         )
 
     monkeypatch.setattr(
-        "dite.extractors.router.extract_document", fake_extract_document
+        "dite.io.route.extract_document", fake_extract_document
     )
     monkeypatch.setattr(
-        "dite.extractors.router.needs_vlm_fallback", lambda *args, **kwargs: False
+        "dite.io.route.needs_vlm_fallback", lambda *args, **kwargs: False
     )
-    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr("dite.flow.api.cluster_documents", fake_cluster_documents)
     monkeypatch.setattr(
-        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+        "dite.flow.api.generate_all_cluster_names", fake_generate_all_cluster_names
     )
 
     setup_logging(verbose=True)
@@ -2891,7 +3190,7 @@ def test_pipeline_verbose_logs_include_extraction_summary(
 
 
 def test_generate_all_cluster_names_debug_uses_letter_labels(capsys) -> None:
-    from dite.core.clusterer import generate_all_cluster_names
+    from dite.cluster.api import generate_all_cluster_names
 
     class _Completions:
         def create(self, **kwargs):
@@ -2939,8 +3238,8 @@ def test_generate_all_cluster_names_debug_uses_letter_labels(capsys) -> None:
 
 
 def test_generate_all_cluster_names_async_debug_logs_follow_locale(capsys) -> None:
-    from dite.core.clusterer import generate_all_cluster_names
-    from dite.utils.api_runtime import ChatCompletionResult
+    from dite.cluster.api import generate_all_cluster_names
+    from dite.util.api import ChatCompletionResult
 
     class _Client:
         chat = None
@@ -2985,8 +3284,8 @@ def test_generate_all_cluster_names_async_debug_logs_follow_locale(capsys) -> No
 def test_generate_all_cluster_names_limits_cluster_naming_workers(
     monkeypatch,
 ) -> None:
-    from dite.core import clusterer
-    from dite.core.clusterer import generate_all_cluster_names
+    from dite.cluster import api as clusterer
+    from dite.cluster.api import generate_all_cluster_names
 
     current = 0
     max_concurrent = 0
@@ -3057,8 +3356,8 @@ def test_generate_all_cluster_names_limits_cluster_naming_workers(
 def test_generate_all_cluster_names_preserves_label_mapping_out_of_order_completion(
     monkeypatch,
 ) -> None:
-    from dite.core import clusterer
-    from dite.core.clusterer import generate_all_cluster_names
+    from dite.cluster import api as clusterer
+    from dite.cluster.api import generate_all_cluster_names
 
     delays = {
         "cluster-2-a.txt": 0.08,
@@ -3123,8 +3422,8 @@ def test_generate_all_cluster_names_preserves_label_mapping_out_of_order_complet
 def test_generate_all_cluster_names_merges_duplicate_names_after_concurrent_completion(
     monkeypatch,
 ) -> None:
-    from dite.core import clusterer
-    from dite.core.clusterer import generate_all_cluster_names
+    from dite.cluster import api as clusterer
+    from dite.cluster.api import generate_all_cluster_names
 
     delays = {
         "cluster-1-a.txt": 0.08,
@@ -3193,8 +3492,8 @@ def test_generate_all_cluster_names_merges_duplicate_names_after_concurrent_comp
 def test_generate_all_cluster_names_prewarms_client_resources_before_worker_threads(
     monkeypatch,
 ) -> None:
-    from dite.core import clusterer
-    from dite.core.clusterer import generate_all_cluster_names
+    from dite.cluster import api as clusterer
+    from dite.cluster.api import generate_all_cluster_names
 
     tracker = {
         "chat_init_threads": [],
@@ -3271,7 +3570,7 @@ def test_generate_all_cluster_names_prewarms_client_resources_before_worker_thre
 
 
 def test_generate_all_cluster_names_integration_merges_same_names_deterministically():
-    from dite.core.clusterer import generate_all_cluster_names
+    from dite.cluster.api import generate_all_cluster_names
 
     calls: list[str] = []
 
@@ -3346,7 +3645,7 @@ def test_generate_all_cluster_names_integration_merges_same_names_deterministica
 
 
 def test_generate_all_cluster_names_skips_client_access_for_noise_only_input() -> None:
-    from dite.core.clusterer import generate_all_cluster_names
+    from dite.cluster.api import generate_all_cluster_names
 
     class _Client:
         @property
@@ -3371,7 +3670,7 @@ def test_generate_all_cluster_names_skips_client_access_for_noise_only_input() -
 
 
 def test_generate_all_cluster_names_clamps_non_positive_worker_count_to_one() -> None:
-    from dite.core.clusterer import generate_all_cluster_names
+    from dite.cluster.api import generate_all_cluster_names
 
     current = 0
     max_concurrent = 0
@@ -3441,7 +3740,7 @@ def test_generate_all_cluster_names_clamps_non_positive_worker_count_to_one() ->
 
 
 def test_generate_all_cluster_names_keeps_duplicate_names_when_merge_disabled() -> None:
-    from dite.core.clusterer import generate_all_cluster_names
+    from dite.cluster.api import generate_all_cluster_names
 
     class _Completions:
         def create(self, **kwargs):
@@ -3497,8 +3796,8 @@ def test_generate_all_cluster_names_keeps_duplicate_names_when_merge_disabled() 
 def test_generate_all_cluster_names_uses_async_request_runtime_when_available(
     monkeypatch,
 ) -> None:
-    from dite.core import clusterer
-    from dite.core.clusterer import generate_all_cluster_names
+    from dite.cluster import api as clusterer
+    from dite.cluster.api import generate_all_cluster_names
 
     class _Runtime:
         def __init__(self) -> None:
@@ -3571,7 +3870,7 @@ def test_generate_all_cluster_names_uses_async_request_runtime_when_available(
 
 
 def test_generate_all_cluster_names_labels_invalid_model_output_per_cluster() -> None:
-    from dite.core.clusterer import generate_all_cluster_names
+    from dite.cluster.api import generate_all_cluster_names
 
     class _Completions:
         def create(self, **kwargs):
@@ -3621,7 +3920,7 @@ def test_generate_all_cluster_names_labels_invalid_model_output_per_cluster() ->
 
 
 def test_merge_clusters_by_name_merges_duplicate_names() -> None:
-    from dite.core.clusterer import merge_clusters_by_name
+    from dite.cluster.api import merge_clusters_by_name
 
     labels = np.array([0, 1, 1, 2, -1], dtype=int)
     cluster_names = {0: "机器学习", 1: "机器学习", 2: "财务"}
@@ -3636,7 +3935,7 @@ def test_merge_clusters_by_name_merges_duplicate_names() -> None:
 
 
 def test_merge_clusters_by_name_does_not_merge_unnamed_fallback() -> None:
-    from dite.core.clusterer import merge_clusters_by_name
+    from dite.cluster.api import merge_clusters_by_name
 
     labels = np.array([0, 1, 2, 2], dtype=int)
     cluster_names = {0: "未命名", 1: "未命名", 2: "线性代数"}
@@ -3651,7 +3950,7 @@ def test_merge_clusters_by_name_does_not_merge_unnamed_fallback() -> None:
 
 
 def test_generate_all_cluster_names_falls_back_to_unnamed_on_api_error() -> None:
-    from dite.core.clusterer import generate_all_cluster_names
+    from dite.cluster.api import generate_all_cluster_names
 
     class _FailingCompletions:
         def create(self, **kwargs):
@@ -3686,7 +3985,7 @@ def test_generate_all_cluster_names_falls_back_to_unnamed_on_api_error() -> None
 
 
 def test_generate_cluster_name_truncates_long_contents_before_api_call() -> None:
-    from dite.core.clusterer import (
+    from dite.cluster.api import (
         CLUSTER_NAME_CONTENT_LIMIT,
         CLUSTER_NAME_EXCERPT_LIMIT,
         generate_cluster_name,
@@ -3748,7 +4047,7 @@ def test_generate_cluster_name_truncates_long_contents_before_api_call() -> None
 def test_generate_cluster_name_uses_representative_top_k_samples_from_embeddings() -> (
     None
 ):
-    from dite.core.clusterer import generate_cluster_name
+    from dite.cluster.api import generate_cluster_name
 
     captured: list[dict] = []
 
@@ -3818,7 +4117,7 @@ def test_generate_cluster_name_uses_representative_top_k_samples_from_embeddings
 
 
 def test_generate_cluster_name_uses_file_name_prompt_when_all_contents_blank() -> None:
-    from dite.core.clusterer import generate_cluster_name
+    from dite.cluster.api import generate_cluster_name
 
     captured: list[dict] = []
 
@@ -3862,7 +4161,7 @@ def test_generate_cluster_name_uses_file_name_prompt_when_all_contents_blank() -
 
 
 def test_generate_cluster_name_falls_back_to_file_name_when_blank_and_api_fails():
-    from dite.core.clusterer import generate_cluster_name
+    from dite.cluster.api import generate_cluster_name
 
     class _Completions:
         def create(self, **kwargs):
@@ -3888,7 +4187,7 @@ def test_generate_cluster_name_falls_back_to_file_name_when_blank_and_api_fails(
 
 
 def test_generate_cluster_name_returns_unnamed_when_no_signal_is_available() -> None:
-    from dite.core.clusterer import generate_cluster_name
+    from dite.cluster.api import generate_cluster_name
 
     class _Completions:
         def create(self, **kwargs):
@@ -3914,7 +4213,7 @@ def test_generate_cluster_name_returns_unnamed_when_no_signal_is_available() -> 
 
 
 def test_generate_cluster_name_builds_zh_prompt_from_content_samples() -> None:
-    from dite.core.clusterer import generate_cluster_name
+    from dite.cluster.api import generate_cluster_name
 
     captured: list[dict] = []
 
@@ -3958,7 +4257,7 @@ def test_generate_cluster_name_builds_zh_prompt_from_content_samples() -> None:
 
 
 def test_generate_cluster_name_truncates_long_valid_model_output() -> None:
-    from dite.core.clusterer import CLUSTER_NAME_OUTPUT_LIMIT, generate_cluster_name
+    from dite.cluster.api import CLUSTER_NAME_OUTPUT_LIMIT, generate_cluster_name
 
     class _Completions:
         def create(self, **kwargs):
@@ -3998,7 +4297,7 @@ def test_generate_cluster_name_truncates_long_valid_model_output() -> None:
 
 
 def test_cluster_naming_helper_normalization_and_invalid_detection() -> None:
-    from dite.core.clusterer import (
+    from dite.cluster.api import (
         _is_invalid_cluster_name,
         _normalize_cluster_name_text,
     )
@@ -4012,7 +4311,7 @@ def test_cluster_naming_helper_normalization_and_invalid_detection() -> None:
 
 
 def test_cluster_naming_helper_author_and_title_detection() -> None:
-    from dite.core.clusterer import _extract_title_like_line, _looks_like_author_line
+    from dite.cluster.api import _extract_title_like_line, _looks_like_author_line
 
     assert _looks_like_author_line("Shuo Wang * Chunlong Xia") is True
     assert _looks_like_author_line("王硕 * 夏春龙") is False
@@ -4025,7 +4324,7 @@ def test_cluster_naming_helper_author_and_title_detection() -> None:
 
 
 def test_cluster_naming_helper_file_name_and_heuristic_fallbacks() -> None:
-    from dite.core.clusterer import (
+    from dite.cluster.api import (
         _fallback_name_from_file_name,
         _heuristic_cluster_name,
     )
@@ -4042,7 +4341,7 @@ def test_cluster_naming_helper_file_name_and_heuristic_fallbacks() -> None:
 
 
 def test_cluster_naming_helper_debug_tokens_and_labels_roll_over() -> None:
-    from dite.core.clusterer import _build_cluster_debug_labels, _cluster_debug_token
+    from dite.cluster.api import _build_cluster_debug_labels, _cluster_debug_token
 
     assert _cluster_debug_token(25) == "Z"
     assert _cluster_debug_token(26) == "AA"
@@ -4055,7 +4354,7 @@ def test_cluster_naming_helper_debug_tokens_and_labels_roll_over() -> None:
 
 
 def test_cluster_naming_helper_builds_zh_file_name_only_prompt() -> None:
-    from dite.core.clusterer import _build_cluster_naming_prompt
+    from dite.cluster.api import _build_cluster_naming_prompt
 
     set_locale("zh-CN")
     prompt = _build_cluster_naming_prompt([], ["a.pdf", "b.pdf", "c.pdf"], 2)
@@ -4070,7 +4369,7 @@ def test_cluster_naming_helper_builds_zh_file_name_only_prompt() -> None:
 def test_cluster_naming_helper_compact_sample_uses_file_name_when_title_missing() -> (
     None
 ):
-    from dite.core.clusterer import _compact_sample_for_naming
+    from dite.cluster.api import _compact_sample_for_naming
 
     set_locale("en")
     sample = _compact_sample_for_naming(
@@ -4084,7 +4383,7 @@ def test_cluster_naming_helper_compact_sample_uses_file_name_when_title_missing(
 
 
 def test_generate_cluster_name_uses_heuristic_when_response_is_empty() -> None:
-    from dite.core.clusterer import generate_cluster_name
+    from dite.cluster.api import generate_cluster_name
 
     class _Completions:
         def create(self, **kwargs):
@@ -4118,7 +4417,7 @@ def test_generate_cluster_name_uses_heuristic_when_response_is_empty() -> None:
 
 
 def test_generate_cluster_name_skips_placeholder_and_author_lines() -> None:
-    from dite.core.clusterer import generate_cluster_name
+    from dite.cluster.api import generate_cluster_name
 
     class _Completions:
         def create(self, **kwargs):
@@ -4154,7 +4453,7 @@ def test_generate_cluster_name_skips_placeholder_and_author_lines() -> None:
 
 
 def test_generate_cluster_name_uses_heuristic_for_invalid_model_output() -> None:
-    from dite.core.clusterer import generate_cluster_name
+    from dite.cluster.api import generate_cluster_name
 
     class _Completions:
         def create(self, **kwargs):
@@ -4188,7 +4487,7 @@ def test_generate_cluster_name_uses_heuristic_for_invalid_model_output() -> None
 
 
 def test_generate_cluster_name_retries_provider_server_error_then_succeeds() -> None:
-    from dite.core.clusterer import generate_cluster_name
+    from dite.cluster.api import generate_cluster_name
 
     calls = {"count": 0}
 
@@ -4246,7 +4545,7 @@ def test_generate_cluster_name_retries_provider_server_error_then_succeeds() -> 
 
 
 def test_generate_cluster_name_formats_final_api_error_in_debug(capsys) -> None:
-    from dite.core.clusterer import generate_cluster_name
+    from dite.cluster.api import generate_cluster_name
 
     class _Completions:
         def create(self, **kwargs):
@@ -4299,8 +4598,8 @@ def test_generate_cluster_name_formats_final_api_error_in_debug(capsys) -> None:
 def test_extract_with_vlm_fallback_uses_passed_config(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from dite.config import Config
-    from dite.extractors import router
+    from dite.app.config import Config
+    from dite.io import router
 
     pdf_path = tmp_path / "scan.pdf"
     pdf_path.write_text("fake", encoding="utf-8")
@@ -4338,7 +4637,7 @@ def test_extract_with_vlm_fallback_uses_passed_config(
 
 
 def test_extract_with_vlm_fallback_requires_explicit_config(tmp_path: Path) -> None:
-    from dite.extractors import router
+    from dite.io import router
 
     pdf_path = tmp_path / "scan.pdf"
     pdf_path.write_text("fake", encoding="utf-8")

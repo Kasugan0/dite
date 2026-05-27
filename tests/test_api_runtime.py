@@ -1,14 +1,14 @@
 import asyncio
 
-from dite.config import Config
-from dite.i18n import set_locale
-from dite.utils.api_runtime import (
+from dite.app.config import Config
+from dite.app.i18n import set_locale
+from dite.util.api import (
     AsyncRequestRuntime,
     ChatCompletionRequest,
     build_httpx_limits,
     build_httpx_timeout,
 )
-from dite.utils.logging import setup_logging
+from dite.util.log import setup_logging
 
 
 def test_build_httpx_timeout_and_limits_from_config() -> None:
@@ -86,7 +86,7 @@ def test_async_request_runtime_vlm_batch_respects_global_and_local_limits(
         return _Client()
 
     monkeypatch.setattr(
-        "dite.utils.api_runtime._build_async_openai_client",
+        "dite.util.api._build_async_openai_client",
         fake_build_async_client,
     )
 
@@ -150,7 +150,7 @@ def test_async_request_runtime_reuses_single_client_across_batches(monkeypatch) 
         return _Client()
 
     monkeypatch.setattr(
-        "dite.utils.api_runtime._build_async_openai_client",
+        "dite.util.api._build_async_openai_client",
         fake_build_async_client,
     )
 
@@ -197,7 +197,7 @@ def test_async_request_runtime_start_is_idempotent(monkeypatch) -> None:
         return _Client()
 
     monkeypatch.setattr(
-        "dite.utils.api_runtime._build_async_openai_client",
+        "dite.util.api._build_async_openai_client",
         fake_build_async_client,
     )
 
@@ -237,7 +237,7 @@ def test_async_request_runtime_close_is_idempotent(monkeypatch) -> None:
         return _Client()
 
     monkeypatch.setattr(
-        "dite.utils.api_runtime._build_async_openai_client",
+        "dite.util.api._build_async_openai_client",
         fake_build_async_client,
     )
 
@@ -302,7 +302,7 @@ def test_async_request_runtime_cannot_restart_after_close(monkeypatch) -> None:
             return None
 
     monkeypatch.setattr(
-        "dite.utils.api_runtime._build_async_openai_client",
+        "dite.util.api._build_async_openai_client",
         lambda config: _Client(),
     )
 

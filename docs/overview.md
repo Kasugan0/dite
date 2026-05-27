@@ -25,6 +25,13 @@ DITE 是一个面向本地文件夹的 CLI 文档聚类工具。它会扫描目�
 - `docs/configuration.md`
 - `docs/architecture.md`
 - `docs/clustering.md`
+- `docs/clustering-v2.md`
+- `docs/related-work.md`
+- `docs/literature-insights.md`
+- `docs/design-data-model.md`
+- `docs/design-pipeline-contract.md`
+- `docs/design-evaluation-protocol.md`
+- `docs/refactor-plan-v2.md`
 - `docs/extraction.md`
 - `docs/cache.md`
 - `docs/roadmap.md`
@@ -45,7 +52,7 @@ DITE 是一个面向本地文件夹的 CLI 文档聚类工具。它会扫描目�
 - Prompt 管理命令
 - 类似 `--config` 这样的工作区级配置覆盖
 
-当前也没有公开的聚类实验 CLI；实验能力只存在于仓库内的内部工具脚本中。
+当前也没有公开的聚类实验 CLI；实验能力只存在于仓库内的内部工具脚本中，例如 `tools/cluster_experiments.py`。
 
 `docs/archive/` 下保留的是历史设计与规划材料，不是当前实现说明。
 
@@ -93,7 +100,7 @@ DITE 是一个面向本地文件夹的 CLI 文档聚类工具。它会扫描目�
 - PDF 的 VLM 采样只检查前 10 页。
 - 当前聚类默认值已经比早期版本更保守，并且主流水线里已经有一轮受限的小簇再合并；详见 `docs/clustering.md`。
 - 核心代码里保留了同名簇合并，但它发生在簇命名之后，更像对拆簇问题的症状性补丁；当前 CLI 明确传入 `merge_same_name=False`。
-- `analyzer` 模块存在，但当前主流水线并不把它作为生产路径的一部分。
+- `doc/analyze.py` 模块存在，但当前主流水线并不把它作为生产路径的一部分。
 
 ## 事实来源
 

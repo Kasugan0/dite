@@ -7,17 +7,19 @@ from pathlib import Path
 
 import numpy as np
 
-from dite.cli import _build_report, _print_report
-from dite.config import Config
-from dite.core.analyzer import (
+from dite.app.cli import _build_report, _print_report
+from dite.app.config import Config
+from dite.app.i18n import set_locale
+from dite.cluster.model import CandidateComponent, CandidateEdge
+from dite.doc import DocumentFeatures, MetadataFeatures, QualityFlags
+from dite.doc.analyze import (
     DocumentAnalysis,
     analyze_and_build_payload,
     analyze_document,
     build_weighted_payload,
 )
-from dite.i18n import set_locale
-from dite.utils.hashing import compute_file_hash
-from dite.utils.logging import LogLevel, get_logger, setup_logging
+from dite.util.hash import compute_file_hash
+from dite.util.log import LogLevel, get_logger, setup_logging
 
 
 class _AnalyzerClient:
@@ -165,11 +167,11 @@ def test_analyze_and_build_payload_combines_steps(monkeypatch) -> None:
     )
 
     monkeypatch.setattr(
-        "dite.core.analyzer.analyze_document",
+        "dite.doc.analyze.analyze_document",
         lambda client, content, *, config: expected_analysis,
     )
     monkeypatch.setattr(
-        "dite.core.analyzer.build_weighted_payload",
+        "dite.doc.analyze.build_weighted_payload",
         lambda analysis,
         raw_content: f"payload::{analysis.content.topic}::{raw_content}",
     )
@@ -234,7 +236,7 @@ def test_python_m_entrypoint_calls_cli_app(monkeypatch) -> None:
     def fake_app() -> None:
         calls["count"] += 1
 
-    monkeypatch.setattr("dite.cli.app", fake_app)
+    monkeypatch.setattr("dite.app.cli.app", fake_app)
     runpy.run_module("dite", run_name="__main__")
 
     assert calls["count"] == 1
@@ -367,3 +369,56 @@ def test_verbose_report_uses_stable_cluster_debug_labels(capsys) -> None:
     assert "【A | Alpha】" in output
     assert "【B | Beta】" in output
     assert output.index("【A | Alpha】") < output.index("【B | Beta】")
+
+
+def test_build_report_includes_feature_diagnostics() -> None:
+    report = _build_report(
+        files=[Path("a.txt")],
+        contents=["content"],
+        labels=np.array([0], dtype=int),
+        cluster_names={0: "Topic A"},
+        document_features=[
+            DocumentFeatures(
+                file_id="a",
+                path=Path("a.txt"),
+                name="a.txt",
+                stem="a",
+                extension=".txt",
+                metadata=MetadataFeatures(file_name_tokens=["a"]),
+                quality_flags=QualityFlags(
+                    short_text=True,
+                    filename_dominant=True,
+                ),
+            )
+        ],
+        candidate_edges=[
+            CandidateEdge(
+                source_id="a",
+                target_id="b",
+                edge_type="filename_similarity",
+                score=0.9,
+                evidence=["shared tokens"],
+            )
+        ],
+        candidate_components=[
+            CandidateComponent(
+                component_id="component-1",
+                member_file_ids=["a", "b"],
+                component_type="strong_semantic_group",
+                formation_evidence=["shared tokens"],
+                confidence=1.0,
+            )
+        ],
+    )
+
+    assert report["summary"]["num_document_features"] == 1
+    assert report["summary"]["num_candidate_edges"] == 1
+    assert report["summary"]["num_candidate_components"] == 1
+    assert report["summary"]["num_adjudication_requests"] == 0
+    assert report["summary"]["num_adjudication_decisions"] == 0
+    assert report["summary"]["num_cluster_representations"] == 0
+    assert report["feature_diagnostics"]["filename_dominant_count"] == 1
+    assert report["feature_diagnostics"]["short_text_count"] == 1
+    assert report["feature_diagnostics"]["candidate_edges"][0]["edge_type"] == (
+        "filename_similarity"
+    )

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dite.config import Config
-from dite.extractors.pdf_render import PDFRenderResult
-from dite.extractors.pdf_vlm import extract_pdf_with_vlm_sampling
-from dite.i18n import set_locale
-from dite.utils.api_runtime import ChatCompletionResult
-from dite.utils.logging import setup_logging
+from dite.app.config import Config
+from dite.app.i18n import set_locale
+from dite.io.pdf.render import PDFRenderResult
+from dite.io.pdf.vlm import extract_pdf_with_vlm_sampling
+from dite.util.api import ChatCompletionResult
+from dite.util.log import setup_logging
 
 
 class _Image:
@@ -75,7 +75,7 @@ def test_extract_pdf_with_vlm_sampling_propagates_render_error(
     set_locale("en")
 
     monkeypatch.setattr(
-        "dite.extractors.pdf_vlm.render_pdf_pages",
+        "dite.io.pdf.vlm.render_pdf_pages",
         lambda path, *, max_pages: PDFRenderResult(
             pages=[],
             success=False,
@@ -103,7 +103,7 @@ def test_extract_pdf_with_vlm_sampling_fails_when_all_api_pages_fail(
     set_locale("en")
 
     monkeypatch.setattr(
-        "dite.extractors.pdf_vlm.render_pdf_pages",
+        "dite.io.pdf.vlm.render_pdf_pages",
         lambda path, *, max_pages: PDFRenderResult(
             pages=[_Image(), _Image()],
             success=True,
@@ -132,7 +132,7 @@ def test_extract_pdf_with_vlm_sampling_fails_when_all_pages_are_empty(
     set_locale("en")
 
     monkeypatch.setattr(
-        "dite.extractors.pdf_vlm.render_pdf_pages",
+        "dite.io.pdf.vlm.render_pdf_pages",
         lambda path, *, max_pages: PDFRenderResult(
             pages=[_Image(), _Image()],
             success=True,
@@ -162,7 +162,7 @@ def test_extract_pdf_with_vlm_sampling_keeps_partial_runtime_success(
     set_locale("en")
 
     monkeypatch.setattr(
-        "dite.extractors.pdf_vlm.render_pdf_pages",
+        "dite.io.pdf.vlm.render_pdf_pages",
         lambda path, *, max_pages: PDFRenderResult(
             pages=[_Image(), _Image()],
             success=True,
@@ -213,7 +213,7 @@ def test_extract_pdf_with_vlm_sampling_runtime_logs_follow_locale(
     set_locale("en")
 
     monkeypatch.setattr(
-        "dite.extractors.pdf_vlm.render_pdf_pages",
+        "dite.io.pdf.vlm.render_pdf_pages",
         lambda path, *, max_pages: PDFRenderResult(
             pages=[_Image(), _Image()],
             success=True,

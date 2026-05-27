@@ -1,7 +1,7 @@
 import numpy as np
 
-from dite.config import Config
-from dite.core.embedder import (
+from dite.app.config import Config
+from dite.doc.embed import (
     ContentTruncator,
     get_embedding_cache_version,
     get_embeddings,

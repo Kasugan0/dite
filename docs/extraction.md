@@ -4,7 +4,7 @@
 
 ## 主提取器
 
-当前主提取器由 `src/dite/extractors/router.py` 中的 `extract_document()` 负责选择。
+当前主提取器由 `src/dite/io/route.py` 中的 `extract_document()` 负责选择。
 
 当前提取器类别包括：
 
@@ -41,9 +41,9 @@
 
 当前 PDF 路径由这些函数共同决定：
 
-- `pdf_policy.py` 中的 `build_pdf_decision()`
-- `pdf_finalize.py` 中的 `resolve_pdf_vlm_fallback()`
-- `pdf_finalize.py` 中的 `select_pdf_final_content()`
+- `src/dite/io/pdf/policy.py` 中的 `build_pdf_decision()`
+- `src/dite/io/pdf/final.py` 中的 `resolve_pdf_vlm_fallback()`
+- `src/dite/io/pdf/final.py` 中的 `select_pdf_final_content()`
 
 当前决策流程是：
 
@@ -81,7 +81,7 @@
 
 ## PDF 质量启发式
 
-当前代码会用有效内容长度和 PDF 噪声特征来评估主提取质量。具体评分逻辑在 `pdf_policy.py` 中。
+当前代码会用有效内容长度和 PDF 噪声特征来评估主提取质量。具体评分逻辑在 `src/dite/io/pdf/policy.py` 中。
 
 从行为上看，它意味着：
 

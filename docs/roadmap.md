@@ -15,6 +15,12 @@
 - 不要把缓存复用包装成假的“增量聚类能力”。
 - 优先收紧现有系统，而不是继续堆用户可见功能。
 
+当前有一个明确例外：
+
+- 聚类 V2 重构允许破坏现有聚类输出、默认参数和部分配置语义。
+- 这个例外不是“想改就改”，而是因为当前聚类主路径的数据结构和决策边界已经不足以继续靠小修小补维持。
+- 具体方案见 `docs/clustering-v2.md`。
+
 ## 当前代码已经证明的方向
 
 这些方向已经被当前实现验证过，应该被当成稳定设计方向，而不是开放问题：
@@ -31,21 +37,21 @@
 
 下面这些规划判断，当前都能在这些实现锚点上找到依据：
 
-- `src/dite/cli.py`
+- `src/dite/app/cli.py`
   - `scan()`
   - `organize()`
   - `_run_pipeline_or_exit()`
-- `src/dite/core/pipeline.py`
+- `src/dite/flow/api.py`
   - `PipelineOptions`
   - `PipelineService/_extract_contents()`
   - `PipelineService/_vectorize()`
-- `src/dite/core/organizer.py`
+- `src/dite/flow/move.py`
   - `OrganizePreview/execute()`
-- `src/dite/core/clusterer.py`
+- `src/dite/cluster/api.py`
   - `merge_clusters_by_name()`
-- `src/dite/core/analyzer.py`
+- `src/dite/doc/analyze.py`
   - `analyze_document()`
-- `src/dite/utils/api_runtime.py`
+- `src/dite/util/api.py`
   - `build_sync_openai_client()`
   - `AsyncRequestRuntime`
 

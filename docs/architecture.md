@@ -6,13 +6,14 @@
 
 顶层包结构包括：
 
-- `src/dite/cli.py`
-- `src/dite/config.py`
-- `src/dite/i18n.py`
-- `src/dite/core/`
-- `src/dite/extractors/`
+- `src/dite/app/`
+- `src/dite/doc/`
+- `src/dite/io/`
+- `src/dite/flow/`
+- `src/dite/cluster/`
+- `src/dite/report/`
 - `src/dite/cache/sqlite.py`
-- `src/dite/utils/`
+- `src/dite/util/`
 
 ## 当前运行层次
 
@@ -29,7 +30,7 @@
 
 ## CLI 层
 
-`src/dite/cli.py` 当前刻意保持得比较薄。
+`src/dite/app/cli.py` 当前承担 CLI 入口与少量展示编排。
 
 它主要负责：
 
@@ -44,7 +45,7 @@
 
 ## 流水线层
 
-`src/dite/core/pipeline.py` 是当前的核心编排中心。
+`src/dite/flow/api.py` 是当前的核心编排中心。
 
 关键数据结构包括：
 
@@ -68,7 +69,7 @@
 
 ## 扫描层
 
-`src/dite/core/scanner.py` 默认递归扫描目录。
+`src/dite/flow/scan.py` 默认递归扫描目录。
 
 当前几个重要行为：
 
@@ -82,14 +83,14 @@
 
 关键模块包括：
 
-- `extractors/router.py`
-- `extractors/pdf_policy.py`
-- `extractors/pdf_finalize.py`
-- `extractors/pdf_vlm.py`
-- `extractors/docling.py`
-- `extractors/markitdown.py`
-- `extractors/text.py`
-- `extractors/vlm.py`
+- `io/route.py`
+- `io/pdf/policy.py`
+- `io/pdf/final.py`
+- `io/pdf/vlm.py`
+- `io/docling.py`
+- `io/markitdown.py`
+- `io/text.py`
+- `io/vlm.py`
 
 当前最关键的分层是：
 
@@ -112,7 +113,7 @@
 
 ## Embedding 层
 
-`src/dite/core/embedder.py` 负责从文本构建 embedding。
+`src/dite/doc/embed.py` 负责从文本构建 embedding。
 
 当前行为要点：
 
@@ -123,7 +124,7 @@
 
 ## 聚类层
 
-`src/dite/core/clusterer.py` 当前负责：
+`src/dite/cluster/api.py` 当前负责：
 
 - HDBSCAN 聚类
 - 可选的 k-NN 噪音修复
@@ -145,7 +146,7 @@
 
 ## 整理层
 
-`src/dite/core/organizer.py` 负责根据聚类结果构建整理预览。
+`src/dite/flow/move.py` 负责根据聚类结果构建整理预览。
 
 当前实际支持：
 
@@ -161,4 +162,4 @@
 
 ## Analyzer 当前状态
 
-`src/dite/core/analyzer.py` 模块存在，也有测试，但当前主流水线并不把它作为生产路径使用。今天的主路径仍然是“直接提取内容，再直接做 embedding”。
+`src/dite/doc/analyze.py` 模块存在，也有测试，但当前主流水线并不把它作为生产路径使用。今天的主路径仍然是“直接提取内容，再直接做 embedding”。

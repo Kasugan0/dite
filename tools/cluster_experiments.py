@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from dite.cache import FileCache
-from dite.config import Config, load_config
-from dite.core.pipeline import PipelineOptions, PipelineResult, PipelineService
-from dite.utils.api_runtime import build_sync_openai_client
+from dite.app.config import Config, load_config
+from dite.flow.api import PipelineOptions, PipelineResult, PipelineService
+from dite.util.api import build_sync_openai_client
 
 
 def _build_pipeline(

@@ -9,12 +9,12 @@ from openai import NotFoundError, OpenAI
 from sklearn.metrics.pairwise import cosine_distances
 from typer.testing import CliRunner
 
-from dite.cli import app
-from dite.config import load_config
-from dite.core.clusterer import ClusterMetrics, ClusterResult, generate_cluster_name
-from dite.core.embedder import get_embeddings
-from dite.core.pipeline import PipelineOptions, PipelineService
-from dite.extractors.docling import (
+from dite.app.cli import app
+from dite.app.config import load_config
+from dite.cluster.api import ClusterMetrics, ClusterResult, generate_cluster_name
+from dite.doc.embed import get_embeddings
+from dite.flow.api import PipelineOptions, PipelineService
+from dite.io.docling import (
     get_docling_pdf_artifacts_path,
     has_docling_pdf_artifacts,
 )
@@ -317,7 +317,7 @@ def test_real_api_cluster_names_differ_for_distinct_topics() -> None:
 
 
 def test_real_api_generate_all_cluster_names_smoke() -> None:
-    from dite.core.clusterer import generate_all_cluster_names
+    from dite.cluster.api import generate_all_cluster_names
 
     client, embed_model, llm_model = _real_api_settings()
     config = load_config()

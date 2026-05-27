@@ -23,7 +23,7 @@ def test_importing_cli_does_not_create_global_config(tmp_path: Path) -> None:
     env = os.environ.copy()
     env["HOME"] = str(tmp_path)
     result = subprocess.run(
-        [sys.executable, "-c", "import dite.cli"],
+        [sys.executable, "-c", "import dite.app.cli"],
         capture_output=True,
         text=True,
         env=env,

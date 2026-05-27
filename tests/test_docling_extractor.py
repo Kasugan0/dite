@@ -1,8 +1,9 @@
 import time
 from pathlib import Path
 
-from dite.extractors.base import ExtractionResult
-from dite.extractors.docling import (
+from dite.app.i18n import set_locale
+from dite.io.base import ExtractionResult
+from dite.io.docling import (
     DoclingExtractor,
     _docling_pdf_extract_child,
     _get_required_pdf_artifact_dirs,
@@ -11,7 +12,6 @@ from dite.extractors.docling import (
     get_docling_pdf_artifacts_path,
     has_docling_pdf_artifacts,
 )
-from dite.i18n import set_locale
 
 
 def test_get_docling_pdf_artifacts_path_uses_dite_cache_root(
@@ -102,7 +102,7 @@ def test_docling_pdf_times_out(tmp_path: Path, monkeypatch) -> None:
             raise AssertionError("timeout did not interrupt conversion")
 
     monkeypatch.setattr(
-        "dite.extractors.docling.has_docling_pdf_artifacts",
+        "dite.io.docling.has_docling_pdf_artifacts",
         lambda _artifacts_path: True,
     )
     monkeypatch.setattr(
@@ -233,7 +233,7 @@ def test_extract_docling_pdf_in_subprocess_returns_child_result(
             return _Process(target, args)
 
     monkeypatch.setattr(
-        "dite.extractors.docling.multiprocessing.get_context",
+        "dite.io.docling.multiprocessing.get_context",
         lambda method: _Context(),
     )
 
@@ -283,11 +283,11 @@ def test_docling_pdf_extract_child_silences_docling_logging_before_extract(
             )
 
     monkeypatch.setattr(
-        "dite.extractors.docling.silence_docling_logging",
+        "dite.io.docling.silence_docling_logging",
         fake_silence_docling_logging,
     )
     monkeypatch.setattr(
-        "dite.extractors.docling.DoclingExtractor",
+        "dite.io.docling.DoclingExtractor",
         _FakeDoclingExtractor,
     )
 
@@ -360,7 +360,7 @@ def test_extract_docling_pdf_in_subprocess_times_out_and_terminates(
             return _Process(target, args)
 
     monkeypatch.setattr(
-        "dite.extractors.docling.multiprocessing.get_context",
+        "dite.io.docling.multiprocessing.get_context",
         lambda method: _Context(),
     )
 

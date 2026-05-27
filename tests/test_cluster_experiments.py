@@ -4,9 +4,9 @@ from pathlib import Path
 
 import numpy as np
 
-from dite.config import Config
-from dite.core.clusterer import ClusterMetrics
-from dite.core.pipeline import PipelineResult
+from dite.app.config import Config
+from dite.cluster.api import ClusterMetrics
+from dite.flow.api import PipelineResult
 
 _MODULE_PATH = Path(__file__).resolve().parents[1] / "tools" / "cluster_experiments.py"
 _SPEC = importlib.util.spec_from_file_location("cluster_experiments", _MODULE_PATH)

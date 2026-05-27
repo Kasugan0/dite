@@ -2,7 +2,7 @@ from pathlib import Path
 
 import yaml
 
-from dite.config import load_config
+from dite.app.config import load_config
 
 
 def test_load_config_creates_global_config_when_missing(

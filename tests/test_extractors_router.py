@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dite.config import Config
-from dite.extractors.base import BaseExtractor, ExtractionResult
-from dite.extractors.router import (
+from dite.app.config import Config
+from dite.app.i18n import set_locale
+from dite.io.base import BaseExtractor, ExtractionResult
+from dite.io.route import (
     PDF_VLM_SAMPLE_PAGE_LIMIT,
     ExtractorRegistry,
     VLMSamplingResult,
@@ -20,10 +21,9 @@ from dite.extractors.router import (
     needs_vlm_fallback,
     resolve_document_extraction,
 )
-from dite.extractors.text import TextExtractor
-from dite.extractors.vlm import VLMExtractor
-from dite.i18n import set_locale
-from dite.utils.api_runtime import ChatCompletionResult
+from dite.io.text import TextExtractor
+from dite.io.vlm import VLMExtractor
+from dite.util.api import ChatCompletionResult
 
 
 class _StubExtractor(BaseExtractor):
@@ -170,7 +170,7 @@ def test_get_extractor_routes_by_real_type_and_extension(
     unknown = tmp_path / "archive.xyz"
     unknown.write_bytes(b"1234")
     monkeypatch.setattr(
-        "dite.extractors.router._detect_real_type",
+        "dite.io.route._detect_real_type",
         lambda path: "unknown",
     )
     assert get_extractor(unknown, config=Config(), registry=registry) is None
@@ -379,7 +379,7 @@ def test_extract_content_uses_vlm_fallback_when_better(
     )
 
     monkeypatch.setattr(
-        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        "dite.io.route._extract_pdf_with_vlm_sampling",
         lambda file_path, client, config: VLMSamplingResult(
             result=ExtractionResult(
                 content="much better vlm content",
@@ -421,7 +421,7 @@ def test_extract_content_keeps_original_when_vlm_not_better(
     )
 
     monkeypatch.setattr(
-        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        "dite.io.route._extract_pdf_with_vlm_sampling",
         lambda file_path, client, config: VLMSamplingResult(
             result=ExtractionResult(
                 content="tiny",
@@ -463,7 +463,7 @@ def test_extract_content_prefers_vlm_when_doc_is_long_glyph_noise(
     )
 
     monkeypatch.setattr(
-        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        "dite.io.route._extract_pdf_with_vlm_sampling",
         lambda file_path, client, config, request_runtime=None: VLMSamplingResult(
             result=ExtractionResult(
                 content="这是 VLM 提取出的正常文本。" * 20,
@@ -500,7 +500,7 @@ def test_resolve_document_extraction_reports_vlm_sampling_metrics(
     )
 
     monkeypatch.setattr(
-        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        "dite.io.route._extract_pdf_with_vlm_sampling",
         lambda file_path, client, config, request_runtime=None: VLMSamplingResult(
             result=ExtractionResult(
                 content="much better vlm content",
@@ -544,7 +544,7 @@ def test_resolve_document_extraction_prefers_cached_vlm_without_api_call(
         raise AssertionError("VLM API should not be called when cached VLM exists")
 
     monkeypatch.setattr(
-        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        "dite.io.route._extract_pdf_with_vlm_sampling",
         fail_extract,
     )
 
@@ -583,7 +583,7 @@ def test_resolve_document_extraction_keeps_fallback_needed_when_api_disabled(
         raise AssertionError("VLM API should stay disabled")
 
     monkeypatch.setattr(
-        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        "dite.io.route._extract_pdf_with_vlm_sampling",
         fail_extract,
     )
 
@@ -620,7 +620,7 @@ def test_resolve_document_extraction_marks_cache_write_for_selected_fresh_vlm(
     )
 
     monkeypatch.setattr(
-        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        "dite.io.route._extract_pdf_with_vlm_sampling",
         lambda file_path, client, config: VLMSamplingResult(
             result=ExtractionResult(
                 content="fresh vlm content " * 10,
@@ -664,7 +664,7 @@ def test_resolve_document_extraction_skips_cache_write_for_rejected_fresh_vlm(
     )
 
     monkeypatch.setattr(
-        "dite.extractors.router._extract_pdf_with_vlm_sampling",
+        "dite.io.route._extract_pdf_with_vlm_sampling",
         lambda file_path, client, config: VLMSamplingResult(
             result=ExtractionResult(
                 content="tiny",

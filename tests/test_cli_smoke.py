@@ -6,12 +6,12 @@ from pathlib import Path
 import numpy as np
 from typer.testing import CliRunner
 
+from dite.app.cli import app
 from dite.cache import FileCache
-from dite.cli import app
-from dite.core.embedder import get_embedding_cache_version
-from dite.core.organizer import OrganizePreview
-from dite.core.pipeline import ExtractionFileReport, ExtractionSummary, PipelineResult
-from dite.utils.logging import setup_logging
+from dite.doc.embed import get_embedding_cache_version
+from dite.flow.api import ExtractionFileReport, ExtractionSummary, PipelineResult
+from dite.flow.move import OrganizePreview
+from dite.util.log import setup_logging
 
 
 def _write_test_config(tmp_path: Path, monkeypatch, locale: str = "en") -> Path:
@@ -103,7 +103,7 @@ def test_dite_pdf_check_uses_pdf_only_and_stops_before_pipeline_scan(
                 cluster_names={},
             )
 
-    monkeypatch.setattr("dite.cli.PipelineService", FakePipelineService)
+    monkeypatch.setattr("dite.app.cli.PipelineService", FakePipelineService)
 
     result = runner.invoke(app, ["pdf-check", str(docs)])
 
@@ -170,7 +170,7 @@ def test_dite_pdf_check_reports_summary_note_and_verbose_details(
                 ],
             )
 
-    monkeypatch.setattr("dite.cli.PipelineService", FakePipelineService)
+    monkeypatch.setattr("dite.app.cli.PipelineService", FakePipelineService)
 
     result = runner.invoke(app, ["pdf-check", str(docs), "--verbose"])
 
@@ -216,7 +216,7 @@ def test_dite_pdf_check_verbose_suppresses_raw_docling_error_logs(
                 cluster_names={},
             )
 
-    monkeypatch.setattr("dite.cli.PipelineService", FakePipelineService)
+    monkeypatch.setattr("dite.app.cli.PipelineService", FakePipelineService)
 
     result = runner.invoke(app, ["pdf-check", str(docs), "--verbose"])
 
@@ -268,7 +268,7 @@ def test_dite_pdf_check_fails_when_final_output_is_below_threshold(
                 ],
             )
 
-    monkeypatch.setattr("dite.cli.PipelineService", FakePipelineService)
+    monkeypatch.setattr("dite.app.cli.PipelineService", FakePipelineService)
 
     result = runner.invoke(app, ["pdf-check", str(docs)])
 
@@ -310,7 +310,7 @@ def test_dite_scan_reports_brief_summary_by_default_and_details_in_verbose(
         del pipeline, folder, options, cache
         return fake_result
 
-    monkeypatch.setattr("dite.cli._run_pipeline_or_exit", fake_run_pipeline_or_exit)
+    monkeypatch.setattr("dite.app.cli._run_pipeline_or_exit", fake_run_pipeline_or_exit)
 
     result = runner.invoke(app, ["scan", str(docs)])
 
@@ -391,7 +391,7 @@ def test_dite_scan_verbose_does_not_leak_internal_profile_codes(
         del pipeline, folder, options, cache
         return fake_result
 
-    monkeypatch.setattr("dite.cli._run_pipeline_or_exit", fake_run_pipeline_or_exit)
+    monkeypatch.setattr("dite.app.cli._run_pipeline_or_exit", fake_run_pipeline_or_exit)
 
     result = runner.invoke(app, ["scan", str(docs), "--verbose"])
 
@@ -474,7 +474,7 @@ def test_dite_setup_docling_pdf_runs_downloader(tmp_path: Path, monkeypatch) -> 
             (output_dir / name).mkdir(parents=True, exist_ok=True)
         return output_dir
 
-    monkeypatch.setattr("dite.cli.download_docling_pdf_models", fake_download)
+    monkeypatch.setattr("dite.app.cli.download_docling_pdf_models", fake_download)
 
     result = runner.invoke(app, ["setup", "docling-pdf"])
 
@@ -566,7 +566,7 @@ def test_organize_preview_execute_handles_partial_copy_failure(
             raise OSError("disk full")
         return real_copy2(src, dst, *args, **kwargs)
 
-    monkeypatch.setattr("dite.core.organizer.shutil.copy2", flaky_copy2)
+    monkeypatch.setattr("dite.flow.move.shutil.copy2", flaky_copy2)
 
     success, failed = preview.execute(dry_run=False)
 

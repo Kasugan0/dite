@@ -2,6 +2,8 @@
 
 本文档描述 DITE 当前仓库中的聚类策略现状、已知问题、外部最佳实践，以及下一步改动计划。
 
+如果你要看下一阶段的大重构方案，而不是当前实现说明，请直接看 `docs/clustering-v2.md`。
+
 它不是 HDBSCAN 教程。它的目标，是把当前实现讲清楚，然后给出一条能落地的收紧路线。
 
 如果本文档与代码冲突，以代码为准。
@@ -10,17 +12,19 @@
 
 聚类相关事实，当前主要来自这些实现位置：
 
-- `src/dite/config.py`
+- `src/dite/app/config.py`
   - `ClusteringConfig`
-- `src/dite/core/clusterer.py`
+- `src/dite/cluster/api.py`
   - `cluster_documents()`
   - `repair_noise_with_knn()`
   - `repair_all_noise_with_similarity()`
   - `merge_clusters_by_name()`
   - `generate_all_cluster_names()`
-- `src/dite/core/pipeline.py`
+- `src/dite/cluster/post.py`
+  - `merge_small_clusters_by_similarity()`
+- `src/dite/flow/model.py`
   - `PipelineOptions`
-- `src/dite/cli.py`
+- `src/dite/app/cli.py`
   - `scan()`
   - `organize()`
 

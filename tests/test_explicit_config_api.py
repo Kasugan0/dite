@@ -3,17 +3,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from dite.core.analyzer import analyze_and_build_payload, analyze_document
-from dite.core.clusterer import (
+from dite.cluster.api import (
     cluster_documents,
     generate_all_cluster_names,
     generate_cluster_name,
 )
-from dite.core.embedder import get_embeddings
-from dite.core.extractor import extract_content as core_extract_content
-from dite.core.pipeline import PipelineService
-from dite.core.scanner import scan_files
-from dite.extractors.router import (
+from dite.doc.analyze import analyze_and_build_payload, analyze_document
+from dite.doc.embed import get_embeddings
+from dite.flow.api import PipelineService
+from dite.flow.scan import scan_files
+from dite.io.route import (
     classify_pdf_profile,
     extract_content,
     extract_document,
@@ -71,9 +70,6 @@ def test_core_public_functions_require_explicit_config(tmp_path: Path) -> None:
             ["payload"],
             [sample],
         )
-
-    with pytest.raises(TypeError):
-        call_invalid_signature(core_extract_content, sample)
 
 
 def test_extractor_public_functions_require_explicit_config(tmp_path: Path) -> None:

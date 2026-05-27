@@ -7,17 +7,17 @@ import numpy as np
 from openai import APIStatusError
 from typer.testing import CliRunner
 
+from dite.app.cli import app
 from dite.cache import FileCache
-from dite.cli import app
-from dite.core.clusterer import ClusterMetrics, ClusterResult
-from dite.core.pipeline import PipelineResult
-from dite.extractors.base import ExtractionResult
-from dite.extractors.router import (
+from dite.cluster.api import ClusterMetrics, ClusterResult
+from dite.flow.api import PipelineResult
+from dite.io.base import ExtractionResult
+from dite.io.route import (
     PDF_VLM_SAMPLE_PAGE_LIMIT,
     PDFProfile,
     ResolvedExtraction,
 )
-from dite.utils.llm import format_api_error
+from dite.util.llm import format_api_error
 
 TEST_CORPUS_DIR = Path(__file__).resolve().parents[1] / "docs" / "test" / "valid"
 
@@ -121,10 +121,10 @@ def test_scan_cli_end_to_end_with_cache(tmp_path: Path, monkeypatch) -> None:
         del client, contents, files, embeddings, merge_same_name, llm_model, config
         return make_cluster_result(result, cluster_names={0: "Cluster_A"})
 
-    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
-    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr("dite.flow.api.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.flow.api.cluster_documents", fake_cluster_documents)
     monkeypatch.setattr(
-        "dite.core.pipeline.generate_all_cluster_names", fake_generate_all_cluster_names
+        "dite.flow.api.generate_all_cluster_names", fake_generate_all_cluster_names
     )
 
     first = runner.invoke(
@@ -269,13 +269,13 @@ def test_scan_cli_reports_real_duplicate_fixture_groups_only_in_verbose(
         return make_cluster_result(result, cluster_names={0: "Duplicate Papers"})
 
     monkeypatch.setattr(
-        "dite.core.pipeline.resolve_document_extraction",
+        "dite.flow.api.resolve_document_extraction",
         fake_resolve_document_extraction,
     )
-    monkeypatch.setattr("dite.core.pipeline.get_embeddings", fake_get_embeddings)
-    monkeypatch.setattr("dite.core.pipeline.cluster_documents", fake_cluster_documents)
+    monkeypatch.setattr("dite.flow.api.get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr("dite.flow.api.cluster_documents", fake_cluster_documents)
     monkeypatch.setattr(
-        "dite.core.pipeline.generate_all_cluster_names",
+        "dite.flow.api.generate_all_cluster_names",
         fake_generate_all_cluster_names,
     )
 
@@ -311,7 +311,7 @@ def test_scan_cli_handles_api_connection_error(tmp_path: Path, monkeypatch) -> N
             request=httpx.Request("POST", "https://api.example.com/v1/embeddings"),
         )
 
-    monkeypatch.setattr("dite.core.pipeline.PipelineService.run", fake_run)
+    monkeypatch.setattr("dite.flow.api.PipelineService.run", fake_run)
 
     result = runner.invoke(
         app,
@@ -380,7 +380,7 @@ def test_organize_cli_execute_avoids_overwrite_and_moves_files(
             cluster_names={0: "finance/reports:*"},
         )
 
-    monkeypatch.setattr("dite.core.pipeline.PipelineService.run", fake_run)
+    monkeypatch.setattr("dite.flow.api.PipelineService.run", fake_run)
 
     result = runner.invoke(
         app,
@@ -425,7 +425,7 @@ def test_organize_cli_passes_target_to_pipeline_exclude_paths(
             cluster_names={0: "Cluster_A"},
         )
 
-    monkeypatch.setattr("dite.core.pipeline.PipelineService.run", fake_run)
+    monkeypatch.setattr("dite.flow.api.PipelineService.run", fake_run)
 
     result = runner.invoke(app, ["organize", str(docs), "--dry-run"])
 
@@ -456,7 +456,7 @@ def test_scan_cli_disables_same_name_merge_by_default(
             cluster_names={0: "Cluster_A"},
         )
 
-    monkeypatch.setattr("dite.core.pipeline.PipelineService.run", fake_run)
+    monkeypatch.setattr("dite.flow.api.PipelineService.run", fake_run)
 
     result = runner.invoke(app, ["scan", str(docs)])
 
@@ -495,7 +495,7 @@ def test_scan_cli_report_keeps_duplicate_aliases_in_same_cluster(
             ),
         )
 
-    monkeypatch.setattr("dite.core.pipeline.PipelineService.run", fake_run)
+    monkeypatch.setattr("dite.flow.api.PipelineService.run", fake_run)
 
     result = runner.invoke(
         app,
@@ -552,7 +552,7 @@ def test_organize_cli_script_moves_duplicate_aliases_to_same_cluster(
             cluster_metrics=ClusterMetrics(initial_clusters=1),
         )
 
-    monkeypatch.setattr("dite.core.pipeline.PipelineService.run", fake_run)
+    monkeypatch.setattr("dite.flow.api.PipelineService.run", fake_run)
 
     result = runner.invoke(
         app,
@@ -591,7 +591,7 @@ def test_organize_cli_output_script_generates_shell_script(
             cluster_metrics=ClusterMetrics(initial_clusters=1),
         )
 
-    monkeypatch.setattr("dite.core.pipeline.PipelineService.run", fake_run)
+    monkeypatch.setattr("dite.flow.api.PipelineService.run", fake_run)
 
     result = runner.invoke(
         app,
@@ -791,7 +791,7 @@ def test_pdf_check_cli_reports_real_fixture_failure_corpus_truthfully(
         )
 
     monkeypatch.setattr(
-        "dite.core.pipeline.resolve_document_extraction",
+        "dite.flow.api.resolve_document_extraction",
         fake_resolve_document_extraction,
     )
 
@@ -889,7 +889,7 @@ def test_pdf_check_cli_uses_final_effective_length_instead_of_truncated_excerpt(
         )
 
     monkeypatch.setattr(
-        "dite.core.pipeline.resolve_document_extraction",
+        "dite.flow.api.resolve_document_extraction",
         fake_resolve_document_extraction,
     )
 
@@ -993,7 +993,7 @@ def test_pdf_check_verbose_lists_only_problem_files(
         )
 
     monkeypatch.setattr(
-        "dite.core.pipeline.resolve_document_extraction",
+        "dite.flow.api.resolve_document_extraction",
         fake_resolve_document_extraction,
     )
 
@@ -1068,7 +1068,7 @@ def test_pdf_check_verbose_hides_problem_table_when_all_files_are_healthy(
         )
 
     monkeypatch.setattr(
-        "dite.core.pipeline.resolve_document_extraction",
+        "dite.flow.api.resolve_document_extraction",
         fake_resolve_document_extraction,
     )
 
@@ -1142,7 +1142,7 @@ def test_pdf_check_cached_vlm_only_disables_vlm_api_in_real_pipeline_path(
         )
 
     monkeypatch.setattr(
-        "dite.core.pipeline.resolve_document_extraction",
+        "dite.flow.api.resolve_document_extraction",
         fake_resolve_document_extraction,
     )
 
@@ -1220,7 +1220,7 @@ def test_pdf_check_verbose_uses_human_labels_not_internal_codes(
         )
 
     monkeypatch.setattr(
-        "dite.core.pipeline.resolve_document_extraction",
+        "dite.flow.api.resolve_document_extraction",
         fake_resolve_document_extraction,
     )
 
