@@ -273,6 +273,7 @@ class Messages:
     debug_vlm_api_call: str
     debug_vlm_page_done: str
     debug_vlm_page_failed: str
+    debug_async_runtime_limits: str
 
 
 # Chinese translations (default)
@@ -596,6 +597,11 @@ ZH_CN = Messages(
     debug_vlm_api_call="  调用 VLM API...",
     debug_vlm_page_done="  第 {page} 页完成 ({length} 字符)",
     debug_vlm_page_failed="  第 {page} 页失败: {error}",
+    debug_async_runtime_limits=(
+        "异步 API 运行时限制: cluster={cluster_workers}, vlm={vlm_workers}, "
+        "vlm_pages_per_document={vlm_pages_per_document}, "
+        "max_connections={max_connections}"
+    ),
 )
 
 # English translations
@@ -954,6 +960,11 @@ EN = Messages(
     debug_vlm_api_call="  Calling VLM API...",
     debug_vlm_page_done="  Page {page} completed ({length} chars)",
     debug_vlm_page_failed="  Page {page} failed: {error}",
+    debug_async_runtime_limits=(
+        "Async API runtime limits: cluster={cluster_workers}, vlm={vlm_workers}, "
+        "vlm_pages_per_document={vlm_pages_per_document}, "
+        "max_connections={max_connections}"
+    ),
 )
 
 # Locale to Messages mapping

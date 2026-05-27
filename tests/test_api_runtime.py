@@ -1,12 +1,14 @@
 import asyncio
 
 from dite.config import Config
+from dite.i18n import set_locale
 from dite.utils.api_runtime import (
     AsyncRequestRuntime,
     ChatCompletionRequest,
     build_httpx_limits,
     build_httpx_timeout,
 )
+from dite.utils.logging import setup_logging
 
 
 def test_build_httpx_timeout_and_limits_from_config() -> None:
@@ -318,3 +320,16 @@ def test_async_request_runtime_cannot_restart_after_close(monkeypatch) -> None:
         assert str(exc) == "async request runtime is already closed"
     else:
         raise AssertionError("runtime.start() should fail after close")
+
+
+def test_async_request_runtime_debug_logs_follow_locale(capsys) -> None:
+    setup_logging(verbose=True)
+    set_locale("en")
+
+    runtime = AsyncRequestRuntime(Config())
+    runtime._log_effective_limits()
+
+    output = capsys.readouterr().out
+
+    assert "Async API runtime limits:" in output
+    assert "异步 API 运行时限制" not in output

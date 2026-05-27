@@ -12,6 +12,7 @@ import httpx
 from openai import AsyncOpenAI, OpenAI
 
 from dite.config import Config
+from dite.i18n import t
 from dite.utils.logging import get_logger
 
 
@@ -276,11 +277,13 @@ class AsyncRequestRuntime:
 
     def _log_effective_limits(self) -> None:
         self._logger.debug(
-            "Async API runtime limits: "
-            f"cluster={self._effective_cluster_workers}, "
-            f"vlm={self._effective_vlm_workers}, "
-            f"vlm_pages_per_document={self._effective_vlm_pages_per_document}, "
-            f"max_connections={self._config.api.max_connections}"
+            t(
+                "debug_async_runtime_limits",
+                cluster_workers=self._effective_cluster_workers,
+                vlm_workers=self._effective_vlm_workers,
+                vlm_pages_per_document=self._effective_vlm_pages_per_document,
+                max_connections=self._config.api.max_connections,
+            )
         )
 
     def _submit_coroutine(
