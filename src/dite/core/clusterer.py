@@ -1129,11 +1129,14 @@ def generate_all_cluster_names(
             if response.error is not None:
                 fallback = _heuristic_cluster_name(selected_contents, selected_names)
                 logger.debug(
-                    "Cluster naming async request failed for "
-                    f"{debug_labels.get(label, str(label))}: {response.error} "
-                    f"(wait={response.queue_wait_sec:.3f}s, "
-                    f"request={response.request_elapsed_sec:.3f}s, "
-                    f"fallback={fallback})"
+                    t(
+                        "debug_cluster_name_async_request_failed",
+                        label=debug_labels.get(label, str(label)),
+                        error=response.error,
+                        wait_sec=response.queue_wait_sec,
+                        request_sec=response.request_elapsed_sec,
+                        fallback=fallback,
+                    )
                 )
                 results.append((label, _display_cluster_name(label, fallback), count))
                 continue
@@ -1142,11 +1145,13 @@ def generate_all_cluster_names(
             if not raw_name:
                 fallback = _heuristic_cluster_name(selected_contents, selected_names)
                 logger.debug(
-                    "Cluster naming async response empty for "
-                    f"{debug_labels.get(label, str(label))} "
-                    f"(wait={response.queue_wait_sec:.3f}s, "
-                    f"request={response.request_elapsed_sec:.3f}s, "
-                    f"fallback={fallback})"
+                    t(
+                        "debug_cluster_name_async_response_empty",
+                        label=debug_labels.get(label, str(label)),
+                        wait_sec=response.queue_wait_sec,
+                        request_sec=response.request_elapsed_sec,
+                        fallback=fallback,
+                    )
                 )
                 results.append((label, _display_cluster_name(label, fallback), count))
                 continue
@@ -1155,11 +1160,13 @@ def generate_all_cluster_names(
             if _is_invalid_cluster_name(name):
                 fallback = _heuristic_cluster_name(selected_contents, selected_names)
                 logger.debug(
-                    "Cluster naming async response invalid for "
-                    f"{debug_labels.get(label, str(label))} "
-                    f"(wait={response.queue_wait_sec:.3f}s, "
-                    f"request={response.request_elapsed_sec:.3f}s, "
-                    f"fallback={fallback})"
+                    t(
+                        "debug_cluster_name_async_response_invalid",
+                        label=debug_labels.get(label, str(label)),
+                        wait_sec=response.queue_wait_sec,
+                        request_sec=response.request_elapsed_sec,
+                        fallback=fallback,
+                    )
                 )
                 results.append((label, _display_cluster_name(label, fallback), count))
                 continue

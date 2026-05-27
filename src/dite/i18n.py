@@ -259,6 +259,9 @@ class Messages:
     debug_cluster_name_failed_fallback: str
     debug_cluster_merge: str
     debug_cluster_name_result: str
+    debug_cluster_name_async_request_failed: str
+    debug_cluster_name_async_response_empty: str
+    debug_cluster_name_async_response_invalid: str
     debug_analyzer_json_parse_failed: str
     debug_analyzer_api_failed: str
     warning_unsupported_file_format: str
@@ -579,6 +582,18 @@ ZH_CN = Messages(
     debug_cluster_name_failed_fallback="簇命名失败，使用回退名称 {fallback}: {error}",
     debug_cluster_merge="合并簇 {source} -> {target} (名称: {name})",
     debug_cluster_name_result="簇 {label} 命名为 {name} (files={count})",
+    debug_cluster_name_async_request_failed=(
+        "簇 {label} 异步命名请求失败: error={error}, wait={wait_sec:.3f}s, "
+        "request={request_sec:.3f}s, fallback={fallback}"
+    ),
+    debug_cluster_name_async_response_empty=(
+        "簇 {label} 异步命名结果为空: wait={wait_sec:.3f}s, "
+        "request={request_sec:.3f}s, fallback={fallback}"
+    ),
+    debug_cluster_name_async_response_invalid=(
+        "簇 {label} 异步命名结果非法: wait={wait_sec:.3f}s, "
+        "request={request_sec:.3f}s, fallback={fallback}"
+    ),
     debug_analyzer_json_parse_failed=(
         "JSON 解析失败 (尝试 {attempt}/{max_retries}): {error}"
     ),
@@ -940,6 +955,18 @@ EN = Messages(
     ),
     debug_cluster_merge="Merged cluster {source} -> {target} (name: {name})",
     debug_cluster_name_result="Cluster {label} named {name} (files={count})",
+    debug_cluster_name_async_request_failed=(
+        "Cluster {label} async naming request failed: error={error}, "
+        "wait={wait_sec:.3f}s, request={request_sec:.3f}s, fallback={fallback}"
+    ),
+    debug_cluster_name_async_response_empty=(
+        "Cluster {label} async naming response empty: "
+        "wait={wait_sec:.3f}s, request={request_sec:.3f}s, fallback={fallback}"
+    ),
+    debug_cluster_name_async_response_invalid=(
+        "Cluster {label} async naming response invalid: "
+        "wait={wait_sec:.3f}s, request={request_sec:.3f}s, fallback={fallback}"
+    ),
     debug_analyzer_json_parse_failed=(
         "JSON parsing failed (attempt {attempt}/{max_retries}): {error}"
     ),

@@ -2938,6 +2938,50 @@ def test_generate_all_cluster_names_debug_uses_letter_labels(capsys) -> None:
     assert "Cluster 2 named" not in output
 
 
+def test_generate_all_cluster_names_async_debug_logs_follow_locale(capsys) -> None:
+    from dite.core.clusterer import generate_all_cluster_names
+    from dite.utils.api_runtime import ChatCompletionResult
+
+    class _Client:
+        chat = None
+
+    class _Runtime:
+        def run_cluster_naming_batch(self, requests):
+            del requests
+            return [
+                ChatCompletionResult(
+                    content=None,
+                    error="boom",
+                    queue_wait_sec=0.01,
+                    request_elapsed_sec=0.02,
+                )
+            ]
+
+    setup_logging(verbose=True)
+    set_locale("en")
+
+    result = make_cluster_result([0])
+    generate_all_cluster_names(
+        client=_Client(),
+        result=result,
+        contents=["doc a"],
+        files=[Path("a.txt")],
+        config=Config(),
+        embeddings=None,
+        merge_same_name=False,
+        llm_model="dummy-model",
+        request_runtime=_Runtime(),
+    )
+
+    output = capsys.readouterr().out
+
+    assert "Cluster A async naming request failed:" in output
+    assert "wait=0.010s" in output
+    assert "request=0.020s" in output
+    assert "fallback=" in output
+    assert "异步命名请求失败" not in output
+
+
 def test_generate_all_cluster_names_limits_cluster_naming_workers(
     monkeypatch,
 ) -> None:
