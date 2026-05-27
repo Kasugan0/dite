@@ -1,0 +1,346 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+
+from dite.cluster import (
+    AdjudicationDecision,
+    AdjudicationRequest,
+    apply_rule_adjudication,
+    build_adjudication_requests,
+)
+from dite.cluster.link import (
+    build_candidate_components,
+    build_candidate_edges,
+)
+from dite.cluster.model import CandidateComponent, CandidateEdge, ClusterRepresentation
+from dite.cluster.view import build_cluster_representations
+from dite.doc import (
+    DocumentFeatures,
+    EntityFeatures,
+    LayoutHints,
+    MetadataFeatures,
+    QualityFlags,
+    build_document_features,
+)
+
+
+def test_document_features_defaults_and_top_level_proxies() -> None:
+    features = DocumentFeatures(
+        file_id="doc-1",
+        path=Path("docs/example.pdf"),
+        name="example.pdf",
+        stem="example",
+        extension=".pdf",
+    )
+
+    assert features.content_text == ""
+    assert features.summary == ""
+    assert features.title_candidates == []
+    assert features.file_name_tokens == []
+    assert features.parent_path_tokens == []
+    assert features.keywords == []
+    assert features.topic == ""
+    assert features.domain == ""
+    assert features.quality_flags.extraction_failed is False
+
+
+def test_document_features_preserve_nested_feature_models() -> None:
+    features = DocumentFeatures(
+        file_id="doc-2",
+        path=Path("docs/report.md"),
+        name="report.md",
+        stem="report",
+        extension=".md",
+        metadata=MetadataFeatures(
+            file_name_tokens=["report", "q3"],
+            parent_path_tokens=["finance", "2025"],
+            title_candidates=["Quarterly Report"],
+        ),
+        entities=EntityFeatures(
+            entities=["OpenAI"],
+            keywords=["revenue", "forecast"],
+            topic="finance",
+            domain="finance",
+        ),
+        layout=LayoutHints(
+            document_type="report",
+            columns="double",
+            has_table=True,
+            template_signals=["corporate"],
+            page_count=12,
+        ),
+        quality_flags=QualityFlags(
+            extraction_failed=False,
+            short_text=False,
+            filename_dominant=False,
+        ),
+        content_embedding=np.array([0.1, 0.2], dtype=np.float32),
+    )
+
+    assert features.title_candidates == ["Quarterly Report"]
+    assert features.file_name_tokens == ["report", "q3"]
+    assert features.parent_path_tokens == ["finance", "2025"]
+    assert features.keywords == ["revenue", "forecast"]
+    assert features.topic == "finance"
+    assert features.domain == "finance"
+    assert features.layout.document_type == "report"
+    assert features.layout.has_table is True
+    assert np.allclose(features.content_embedding, np.array([0.1, 0.2]))
+
+
+def test_pipeline_result_exposes_document_features_slot() -> None:
+    from dite.flow.api import PipelineResult
+
+    result = PipelineResult(
+        files=[],
+        contents=[],
+        document_features=[],
+        embeddings=np.array([]),
+        labels=np.array([], dtype=int),
+        cluster_names={},
+    )
+
+    assert result.document_features == []
+    assert result.candidate_edges == []
+    assert result.candidate_components == []
+    assert result.adjudication_requests == []
+    assert result.adjudication_decisions == []
+    assert result.cluster_representations == {}
+
+
+def test_build_document_features_uses_file_report_and_generates_tokens() -> None:
+    class _Report:
+        primary_success = False
+        selected_source = "vlm_api"
+        primary_extractor = "docling"
+
+    features = build_document_features(
+        Path("finance/2025/Q3-report.pdf"),
+        "Quarterly Report\nRevenue grew significantly this quarter.",
+        file_report=_Report(),
+    )
+
+    assert features.file_id.endswith("Q3-report.pdf")
+    assert features.file_name_tokens == ["q3", "report"]
+    assert features.parent_path_tokens == ["finance", "2025"]
+    assert features.title_candidates[0] == "Quarterly Report"
+    assert features.selected_source == "vlm_api"
+    assert features.extraction_trace == "docling->vlm_api"
+    assert features.quality_flags.extraction_failed is True
+    assert features.quality_flags.short_text is True
+    assert features.quality_flags.filename_dominant is True
+    assert features.summary == "Quarterly Report"
+    assert "revenue" in features.keywords
+    assert "quarterly" in features.topic
+
+
+def test_candidate_edge_and_component_models_keep_evidence() -> None:
+    edge = CandidateEdge(
+        source_id="doc-a",
+        target_id="doc-b",
+        edge_type="content_similarity",
+        score=0.93,
+        evidence=["same top keywords", "high cosine similarity"],
+        hard_constraint="must_link",
+        quality_guard=["short_text"],
+    )
+    component = CandidateComponent(
+        component_id="component-1",
+        member_file_ids=["doc-a", "doc-b"],
+        component_type="strong_semantic_group",
+        formation_evidence=["content_similarity>=0.9", "title overlap"],
+        confidence=0.88,
+    )
+
+    assert edge.evidence == ["same top keywords", "high cosine similarity"]
+    assert edge.hard_constraint == "must_link"
+    assert edge.quality_guard == ["short_text"]
+    assert component.member_file_ids == ["doc-a", "doc-b"]
+    assert component.confidence == 0.88
+
+
+def test_build_candidate_edges_and_components_from_titles_and_filename_tokens() -> None:
+    left = DocumentFeatures(
+        file_id="doc-a",
+        path=Path("study/linear-algebra-a.pdf"),
+        name="linear-algebra-a.pdf",
+        stem="linear-algebra-a",
+        extension=".pdf",
+        metadata=MetadataFeatures(
+            file_name_tokens=["linear", "algebra"],
+            parent_path_tokens=["study"],
+            title_candidates=["Linear Algebra Notes"],
+        ),
+    )
+    right = DocumentFeatures(
+        file_id="doc-b",
+        path=Path("study/linear-algebra-b.pdf"),
+        name="linear-algebra-b.pdf",
+        stem="linear-algebra-b",
+        extension=".pdf",
+        metadata=MetadataFeatures(
+            file_name_tokens=["linear", "algebra"],
+            parent_path_tokens=["study"],
+            title_candidates=["Linear Algebra Notes"],
+        ),
+    )
+    unrelated = DocumentFeatures(
+        file_id="doc-c",
+        path=Path("games/minecraft-guide.md"),
+        name="minecraft-guide.md",
+        stem="minecraft-guide",
+        extension=".md",
+        metadata=MetadataFeatures(
+            file_name_tokens=["minecraft", "guide"],
+            parent_path_tokens=["games"],
+            title_candidates=["Minecraft Guide"],
+        ),
+    )
+
+    edges = build_candidate_edges([left, right, unrelated])
+    components = build_candidate_components([left, right, unrelated], edges)
+
+    assert len(edges) == 1
+    assert edges[0].source_id == "doc-a"
+    assert edges[0].target_id == "doc-b"
+    assert edges[0].edge_type == "title_match"
+    assert len(components) == 1
+    assert components[0].member_file_ids == ["doc-a", "doc-b"]
+
+
+def test_build_candidate_edges_uses_content_embedding_similarity() -> None:
+    left = DocumentFeatures(
+        file_id="doc-a",
+        path=Path("docs/a.txt"),
+        name="a.txt",
+        stem="a",
+        extension=".txt",
+        content_embedding=np.array([1.0, 0.0], dtype=np.float32),
+    )
+    right = DocumentFeatures(
+        file_id="doc-b",
+        path=Path("docs/b.txt"),
+        name="b.txt",
+        stem="b",
+        extension=".txt",
+        content_embedding=np.array([0.95, 0.05], dtype=np.float32),
+    )
+    unrelated = DocumentFeatures(
+        file_id="doc-c",
+        path=Path("docs/c.txt"),
+        name="c.txt",
+        stem="c",
+        extension=".txt",
+        content_embedding=np.array([0.0, 1.0], dtype=np.float32),
+    )
+
+    edges = build_candidate_edges(
+        [left, right, unrelated],
+        min_content_similarity=0.9,
+    )
+
+    assert len(edges) == 1
+    assert edges[0].edge_type == "content_similarity"
+    assert edges[0].source_id == "doc-a"
+    assert edges[0].target_id == "doc-b"
+
+
+def test_build_adjudication_requests_and_rule_decisions() -> None:
+    edges = [
+        CandidateEdge(
+            source_id="doc-a",
+            target_id="doc-b",
+            edge_type="content_similarity",
+            score=0.93,
+            evidence=["high cosine similarity"],
+        )
+    ]
+    components = [
+        CandidateComponent(
+            component_id="component-1",
+            member_file_ids=["doc-a", "doc-b"],
+            component_type="strong_semantic_group",
+            formation_evidence=["strong_candidate_edges"],
+            confidence=1.0,
+        )
+    ]
+
+    requests = build_adjudication_requests(edges, components)
+    decisions = apply_rule_adjudication(requests)
+
+    assert len(requests) == 2
+    assert requests[0].request_type == "component_review"
+    assert requests[1].request_type == "edge_review"
+    assert requests[1].score == 0.93
+    assert len(decisions) == 2
+    assert decisions[0].decision == "keep_component"
+    assert decisions[1].decision == "merge_edge"
+    assert all(isinstance(item, AdjudicationRequest) for item in requests)
+    assert all(isinstance(item, AdjudicationDecision) for item in decisions)
+
+
+def test_cluster_representation_defaults() -> None:
+    representation = ClusterRepresentation(cluster_id=3, name="Linear Algebra")
+
+    assert representation.cluster_id == 3
+    assert representation.name == "Linear Algebra"
+    assert representation.summary == ""
+    assert representation.keywords == []
+
+
+def test_build_cluster_representations_uses_feature_signals() -> None:
+    features = [
+        DocumentFeatures(
+            file_id="doc-a",
+            path=Path("docs/a.txt"),
+            name="a.txt",
+            stem="a",
+            extension=".txt",
+            summary="Intro to linear algebra",
+            entities=EntityFeatures(
+                keywords=["matrix", "vector", "matrix"],
+                topic="linear algebra",
+                domain="education",
+            ),
+        ),
+        DocumentFeatures(
+            file_id="doc-b",
+            path=Path("docs/b.txt"),
+            name="b.txt",
+            stem="b",
+            extension=".txt",
+            summary="Second note",
+            entities=EntityFeatures(
+                keywords=["matrix", "basis"],
+                topic="linear algebra",
+                domain="education",
+            ),
+        ),
+    ]
+
+    representations = build_cluster_representations(
+        labels=np.array([0, 0], dtype=int),
+        cluster_names={0: "Linear Algebra"},
+        document_features=features,
+    )
+
+    representation = representations[0]
+    assert representation.name == "Linear Algebra"
+    assert representation.summary == "Intro to linear algebra"
+    assert representation.topic == "linear algebra"
+    assert representation.domain == "education"
+    assert representation.keywords[0] == "matrix"
+    assert representation.representative_file_ids == ["doc-a"]
+
+
+def test_build_document_features_infers_domain_from_keywords_and_path() -> None:
+    features = build_document_features(
+        Path("games/minecraft/server-guide.md"),
+        "Minecraft server guide for Fabric mod setup.",
+    )
+
+    assert features.domain == "gaming"
+    assert "minecraft" in features.topic
+    assert "server" in features.topic
