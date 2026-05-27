@@ -191,24 +191,57 @@ def extract_pdf_with_vlm_sampling(
                 requests,
                 per_document_limit=config.processing.vlm_pages_per_document,
             )
+            success_count = 0
+            failed_count = 0
+            max_wait_sec = 0.0
+            max_request_sec = 0.0
             for page_num, result in zip(page_numbers, results, strict=False):
+                max_wait_sec = max(max_wait_sec, result.queue_wait_sec)
+                max_request_sec = max(max_request_sec, result.request_elapsed_sec)
                 if result.error is not None:
+                    failed_count += 1
                     logger.debug(
-                        "VLM page "
-                        f"{page_num} failed: {result.error} "
-                        f"(wait={result.queue_wait_sec:.3f}s, "
-                        f"request={result.request_elapsed_sec:.3f}s)"
+                        t(
+                            "debug_vlm_page_result_failed",
+                            page=page_num,
+                            error=result.error,
+                            wait_sec=result.queue_wait_sec,
+                            request_sec=result.request_elapsed_sec,
+                        )
                     )
                     continue
                 page_content = (result.content or "").strip()
                 if not page_content:
+                    failed_count += 1
+                    logger.debug(
+                        t(
+                            "debug_vlm_page_result_empty",
+                            page=page_num,
+                            wait_sec=result.queue_wait_sec,
+                            request_sec=result.request_elapsed_sec,
+                        )
+                    )
                     continue
+                success_count += 1
                 all_contents.append(_format_vlm_page_content(page_num, page_content))
                 logger.debug(
-                    "VLM page "
-                    f"{page_num} done: length={len(page_content)} "
-                    f"(wait={result.queue_wait_sec:.3f}s, "
-                    f"request={result.request_elapsed_sec:.3f}s)"
+                    t(
+                        "debug_vlm_page_result_done",
+                        page=page_num,
+                        length=len(page_content),
+                        wait_sec=result.queue_wait_sec,
+                        request_sec=result.request_elapsed_sec,
+                    )
+                )
+            if results:
+                logger.debug(
+                    t(
+                        "debug_vlm_batch_summary",
+                        success=success_count,
+                        failed=failed_count,
+                        max_wait_sec=max_wait_sec,
+                        max_request_sec=max_request_sec,
+                    )
                 )
         else:
             for page_num, request in zip(page_numbers, requests, strict=False):

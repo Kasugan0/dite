@@ -276,6 +276,10 @@ class Messages:
     debug_vlm_api_call: str
     debug_vlm_page_done: str
     debug_vlm_page_failed: str
+    debug_vlm_page_result_done: str
+    debug_vlm_page_result_failed: str
+    debug_vlm_page_result_empty: str
+    debug_vlm_batch_summary: str
     debug_async_runtime_limits: str
 
 
@@ -612,6 +616,22 @@ ZH_CN = Messages(
     debug_vlm_api_call="  调用 VLM API...",
     debug_vlm_page_done="  第 {page} 页完成 ({length} 字符)",
     debug_vlm_page_failed="  第 {page} 页失败: {error}",
+    debug_vlm_page_result_done=(
+        "  第 {page} 页结果: success, length={length}, "
+        "wait={wait_sec:.3f}s, request={request_sec:.3f}s"
+    ),
+    debug_vlm_page_result_failed=(
+        "  第 {page} 页结果: failed, error={error}, "
+        "wait={wait_sec:.3f}s, request={request_sec:.3f}s"
+    ),
+    debug_vlm_page_result_empty=(
+        "  第 {page} 页结果: empty, wait={wait_sec:.3f}s, "
+        "request={request_sec:.3f}s"
+    ),
+    debug_vlm_batch_summary=(
+        "  VLM 批次汇总: success={success}, failed={failed}, "
+        "max_wait={max_wait_sec:.3f}s, max_request={max_request_sec:.3f}s"
+    ),
     debug_async_runtime_limits=(
         "异步 API 运行时限制: cluster={cluster_workers}, vlm={vlm_workers}, "
         "vlm_pages_per_document={vlm_pages_per_document}, "
@@ -987,6 +1007,22 @@ EN = Messages(
     debug_vlm_api_call="  Calling VLM API...",
     debug_vlm_page_done="  Page {page} completed ({length} chars)",
     debug_vlm_page_failed="  Page {page} failed: {error}",
+    debug_vlm_page_result_done=(
+        "  Page {page} result: success, length={length}, "
+        "wait={wait_sec:.3f}s, request={request_sec:.3f}s"
+    ),
+    debug_vlm_page_result_failed=(
+        "  Page {page} result: failed, error={error}, "
+        "wait={wait_sec:.3f}s, request={request_sec:.3f}s"
+    ),
+    debug_vlm_page_result_empty=(
+        "  Page {page} result: empty, wait={wait_sec:.3f}s, "
+        "request={request_sec:.3f}s"
+    ),
+    debug_vlm_batch_summary=(
+        "  VLM batch summary: success={success}, failed={failed}, "
+        "max_wait={max_wait_sec:.3f}s, max_request={max_request_sec:.3f}s"
+    ),
     debug_async_runtime_limits=(
         "Async API runtime limits: cluster={cluster_workers}, vlm={vlm_workers}, "
         "vlm_pages_per_document={vlm_pages_per_document}, "

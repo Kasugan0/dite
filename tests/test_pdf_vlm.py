@@ -7,6 +7,7 @@ from dite.extractors.pdf_render import PDFRenderResult
 from dite.extractors.pdf_vlm import extract_pdf_with_vlm_sampling
 from dite.i18n import set_locale
 from dite.utils.api_runtime import ChatCompletionResult
+from dite.utils.logging import setup_logging
 
 
 class _Image:
@@ -199,3 +200,55 @@ def test_extract_pdf_with_vlm_sampling_keeps_partial_runtime_success(
     requests, per_document_limit = runtime.calls[0]
     assert len(requests) == 2
     assert per_document_limit == 3
+
+
+def test_extract_pdf_with_vlm_sampling_runtime_logs_follow_locale(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    file_path = tmp_path / "scan.pdf"
+    file_path.write_bytes(b"%PDF-1.7")
+    cfg = Config()
+    cfg.processing.vlm_pages_per_document = 3
+    setup_logging(verbose=True)
+    set_locale("en")
+
+    monkeypatch.setattr(
+        "dite.extractors.pdf_vlm.render_pdf_pages",
+        lambda path, *, max_pages: PDFRenderResult(
+            pages=[_Image(), _Image()],
+            success=True,
+            error=None,
+            sample_page_limit=max_pages,
+        ),
+    )
+    runtime = _Runtime(
+        [
+            ChatCompletionResult(
+                content="page 1",
+                error=None,
+                queue_wait_sec=0.01,
+                request_elapsed_sec=0.02,
+            ),
+            ChatCompletionResult(
+                content=None,
+                error="boom",
+                queue_wait_sec=0.03,
+                request_elapsed_sec=0.04,
+            ),
+        ]
+    )
+
+    sampling = extract_pdf_with_vlm_sampling(
+        file_path,
+        _FakeClient([]),
+        config=cfg,
+        request_runtime=runtime,
+    )
+
+    output = capsys.readouterr().out
+
+    assert sampling.result.success is True
+    assert "Page 1 result: success" in output
+    assert "Page 2 result: failed" in output
+    assert "VLM batch summary: success=1, failed=1" in output
+    assert "第 1 页结果" not in output
