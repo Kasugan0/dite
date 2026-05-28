@@ -49,6 +49,35 @@ processing:
   vlm_api_workers: 8                   # Max concurrent VLM requests across files/pages
   vlm_pages_per_document: 4            # Max concurrent VLM page requests within one PDF
 
+# Optional feature enrichment for clustering V2
+feature_extraction:
+  analysis_enabled: false              # Enable analyzer-based feature enrichment
+  analysis_max_content_length: 4000    # Prompt truncation length for analyzer input
+  analysis_max_retries: 2              # Analyzer retry count
+
+# Candidate edge / component generation
+candidate_generation:
+  filename_token_overlap_threshold: 0.8
+  content_similarity_threshold: 0.92
+  component_min_edge_score: 0.9
+
+# Topic clustering controls
+topic_clustering:
+  mode: density                        # density / graph
+  reducer: none                        # none / pca
+  pca_components: null                 # Used only when reducer = pca
+  allow_single_cluster: false
+
+# Optional LLM-assisted boundary adjudication
+cluster_adjudication:
+  enable_llm_judging: false
+  edge_merge_threshold: 0.92
+  request_score_threshold: 0.85
+
+# Cluster representation mode
+cluster_representation:
+  mode: deterministic                  # deterministic / llm_enhanced
+
 # Notes:
 # - pdf-check is a smoke check for final output usability, not a full-document completeness audit.
 # - When PDF fallback uses VLM, only the first 10 pages are sampled.
