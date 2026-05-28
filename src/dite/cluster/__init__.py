@@ -25,6 +25,7 @@ from .model import (
     AdjudicationRequest,
     CandidateComponent,
     CandidateEdge,
+    ClusterDraft,
     ClusterMetrics,
     ClusterRepresentation,
     ClusterResult,
@@ -32,6 +33,7 @@ from .model import (
     SmallClusterSkipEvent,
 )
 from .rule import (
+    apply_llm_adjudication,
     apply_rule_adjudication,
     build_adjudication_requests,
 )
@@ -61,8 +63,10 @@ __all__ = [
     "SmallClusterSkipEvent",
     "CandidateComponent",
     "CandidateEdge",
+    "ClusterDraft",
     "AdjudicationDecision",
     "AdjudicationRequest",
+    "apply_llm_adjudication",
     "apply_rule_adjudication",
     "build_adjudication_requests",
     "build_candidate_components",
