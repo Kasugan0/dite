@@ -286,11 +286,16 @@ def _sweep_configs(base: Config) -> list[tuple[str, Config, PipelineOptions]]:
                             small_cluster_merge_max_size=4,
                             small_cluster_merge_cosine_threshold=0.92,
                         ),
+                        topic_clustering=replace(
+                            base.topic_clustering,
+                            mode="density",
+                            reducer="none",
+                            pca_components=None,
+                            allow_single_cluster=False,
+                        ),
                     )
                     options = PipelineOptions(
                         embedding_input_mode=input_mode,
-                        cluster_allow_single_cluster=False,
-                        cluster_pca_components=None,
                     )
                     runs.append((f"baseline-{run_id:03d}", config, options))
                     run_id += 1
@@ -306,6 +311,7 @@ def _extended_sweep_configs(base: Config) -> list[tuple[str, Config, PipelineOpt
                 for epsilon in (0.0, 0.1, 0.25, 0.4):
                     for pca_components in (None, 50, 100):
                         for allow_single_cluster in (False, True):
+                            reducer = "pca" if pca_components is not None else "none"
                             config = replace(
                                 base,
                                 clustering=replace(
@@ -318,11 +324,16 @@ def _extended_sweep_configs(base: Config) -> list[tuple[str, Config, PipelineOpt
                                     small_cluster_merge_max_size=4,
                                     small_cluster_merge_cosine_threshold=0.92,
                                 ),
+                                topic_clustering=replace(
+                                    base.topic_clustering,
+                                    mode="density",
+                                    reducer=reducer,
+                                    pca_components=pca_components,
+                                    allow_single_cluster=allow_single_cluster,
+                                ),
                             )
                             options = PipelineOptions(
                                 embedding_input_mode=input_mode,
-                                cluster_allow_single_cluster=allow_single_cluster,
-                                cluster_pca_components=pca_components,
                             )
                             runs.append((f"extended-{run_id:03d}", config, options))
                             run_id += 1
@@ -354,11 +365,12 @@ def _run_sweep(
                 "config": {
                     "input_mode": options.embedding_input_mode,
                     "clustering": asdict(run_config.clustering),
-                    "allow_single_cluster": options.cluster_allow_single_cluster,
+                    "topic_clustering": asdict(run_config.topic_clustering),
+                    "allow_single_cluster": run_config.topic_clustering.allow_single_cluster,
                     "reducer": (
                         "none"
-                        if options.cluster_pca_components is None
-                        else f"pca-{options.cluster_pca_components}"
+                        if run_config.topic_clustering.pca_components is None
+                        else f"pca-{run_config.topic_clustering.pca_components}"
                     ),
                     "use_cache": use_cache and config.cache.enabled,
                     "repair_noise": use_knn_repair,
