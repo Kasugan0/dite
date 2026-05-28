@@ -12,10 +12,15 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
-from dite.cache import FileCache
 from dite.app.config import Config, load_config
+from dite.cache import FileCache
 from dite.flow.api import PipelineOptions, PipelineResult, PipelineService
 from dite.util.api import build_sync_openai_client
+from dite.validation import (
+    build_constraint_metrics,
+    build_structure_metrics,
+    load_validation_corpus,
+)
 
 
 def _build_pipeline(
@@ -53,6 +58,39 @@ def _cluster_summary(result: PipelineResult) -> dict[str, Any]:
     }
 
 
+def _process_metrics(result: PipelineResult) -> dict[str, Any]:
+    return {
+        "num_files_total": len(result.files),
+        "num_files_extraction_failed": sum(
+            1
+            for feature in result.document_features
+            if feature.quality_flags.extraction_failed
+        ),
+        "num_files_short_text": sum(
+            1
+            for feature in result.document_features
+            if feature.quality_flags.short_text
+        ),
+        "num_files_filename_dominant": sum(
+            1
+            for feature in result.document_features
+            if feature.quality_flags.filename_dominant
+        ),
+        "candidate_edges_total": len(result.candidate_edges),
+        "candidate_components_total": len(result.candidate_components),
+        "cluster_drafts_total": len(
+            [label for label in set(result.labels.tolist()) if label != -1]
+        ),
+        "adjudication_requests_total": len(result.adjudication_requests),
+        "adjudication_requests_by_type": _count_by_key(
+            [request.request_type for request in result.adjudication_requests]
+        ),
+        "adjudication_by_model": _count_by_key(
+            [decision.model_used for decision in result.adjudication_decisions]
+        ),
+    }
+
+
 def _cluster_diagnostics(result: PipelineResult) -> dict[str, Any]:
     return {
         "small_cluster_merge_max_similarity": (
@@ -84,6 +122,13 @@ def _fragmentation_score(result: PipelineResult) -> int:
         + result.cluster_metrics.small_cluster_merge_skipped
         + int((result.labels == -1).sum())
     )
+
+
+def _count_by_key(items: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        counts[item] = counts.get(item, 0) + 1
+    return counts
 
 
 def _run_pipeline(
@@ -118,6 +163,7 @@ def _compare_inputs(
     use_cache: bool,
     use_knn_repair: bool,
 ) -> dict[str, Any]:
+    corpus = _maybe_load_validation_corpus(folder)
     with_filename = _run_pipeline(
         folder,
         config=config,
@@ -167,6 +213,11 @@ def _compare_inputs(
                     "repair_noise": use_knn_repair,
                 },
                 "summary": _cluster_summary(with_filename),
+                "process_metrics": _process_metrics(with_filename),
+                "structure_metrics": _structure_metrics_payload(with_filename),
+                "constraint_metrics": _constraint_metrics_payload(
+                    with_filename, corpus
+                ),
                 "diagnostics": _cluster_diagnostics(with_filename),
                 "assignments": with_assignments,
             },
@@ -178,6 +229,11 @@ def _compare_inputs(
                     "repair_noise": use_knn_repair,
                 },
                 "summary": _cluster_summary(content_only),
+                "process_metrics": _process_metrics(content_only),
+                "structure_metrics": _structure_metrics_payload(content_only),
+                "constraint_metrics": _constraint_metrics_payload(
+                    content_only, corpus
+                ),
                 "diagnostics": _cluster_diagnostics(content_only),
                 "assignments": content_assignments,
             },
@@ -281,6 +337,7 @@ def _run_sweep(
     use_knn_repair: bool,
     extended: bool,
 ) -> dict[str, Any]:
+    corpus = _maybe_load_validation_corpus(folder)
     configs = _extended_sweep_configs(config) if extended else _sweep_configs(config)
     runs = []
     for run_id, run_config, options in configs:
@@ -307,6 +364,9 @@ def _run_sweep(
                     "repair_noise": use_knn_repair,
                 },
                 "summary": _cluster_summary(result),
+                "process_metrics": _process_metrics(result),
+                "structure_metrics": _structure_metrics_payload(result),
+                "constraint_metrics": _constraint_metrics_payload(result, corpus),
                 "diagnostics": _cluster_diagnostics(result),
                 "assignments": _assignments(result),
                 "fragmentation_score": _fragmentation_score(result),
@@ -325,6 +385,37 @@ def _run_sweep(
         "folder": str(folder),
         "baseline_config": asdict(config.clustering),
         "runs": runs,
+    }
+
+
+def _maybe_load_validation_corpus(folder: Path):
+    manifest_path = folder / "manifest.json"
+    if not manifest_path.exists():
+        return None
+    return load_validation_corpus(folder, manifest_path=manifest_path)
+
+
+def _constraint_metrics_payload(result: PipelineResult, corpus) -> dict[str, Any] | None:
+    if corpus is None:
+        return None
+    metrics = build_constraint_metrics(result, corpus)
+    return {
+        "must_link_total": metrics.must_link_total,
+        "must_link_recall": metrics.must_link_recall,
+        "must_not_link_total": metrics.must_not_link_total,
+        "must_not_link_violations": metrics.must_not_link_violations,
+        "must_not_link_violation_rate": metrics.must_not_link_violation_rate,
+        "cluster_id_fragmentation_total": metrics.cluster_id_fragmentation_total,
+        "cluster_id_fragmentation_by_id": metrics.cluster_id_fragmentation_by_id,
+        "cluster_id_purity_by_id": metrics.cluster_id_purity_by_id,
+    }
+
+
+def _structure_metrics_payload(result: PipelineResult) -> dict[str, Any]:
+    metrics = build_structure_metrics(result)
+    return {
+        "density_validation_score": metrics.density_validation_score,
+        "filename_bias_rate": metrics.filename_bias_rate,
     }
 
 

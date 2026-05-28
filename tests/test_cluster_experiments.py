@@ -50,6 +50,20 @@ def _fake_pipeline_result(
 def test_compare_inputs_builds_file_level_diff(monkeypatch, tmp_path: Path) -> None:
     doc = tmp_path / "doc.txt"
     doc.write_text("alpha", encoding="utf-8")
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": "sample",
+                "tier": "representative",
+                "description": "demo",
+                "owner": "team",
+                "files": [{"path": "doc.txt", "cluster_id": "demo"}],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     def fake_run_pipeline(folder, *, config, use_cache, use_knn_repair, options):
         del folder, config, use_cache, use_knn_repair
@@ -81,6 +95,8 @@ def test_compare_inputs_builds_file_level_diff(monkeypatch, tmp_path: Path) -> N
     )
 
     assert report["runs"]["with_filename"]["summary"]["initial_num_clusters"] == 2
+    assert report["runs"]["with_filename"]["process_metrics"]["num_files_total"] == 1
+    assert report["runs"]["with_filename"]["constraint_metrics"] is not None
     assert report["runs"]["content_only"]["summary"]["num_noise"] == 1
     assert report["diff"]["summary"]["total_clusters_merged_delta"] == 1
     assert report["diff"]["entries"][0]["changed"] is True
@@ -91,6 +107,20 @@ def test_compare_inputs_builds_file_level_diff(monkeypatch, tmp_path: Path) -> N
 def test_sweep_reports_fragmentation_score(monkeypatch, tmp_path: Path) -> None:
     doc = tmp_path / "doc.txt"
     doc.write_text("alpha", encoding="utf-8")
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": "sample",
+                "tier": "representative",
+                "description": "demo",
+                "owner": "team",
+                "files": [{"path": "doc.txt", "cluster_id": "demo"}],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     monkeypatch.setattr(
         cluster_experiments,
@@ -132,6 +162,8 @@ def test_sweep_reports_fragmentation_score(monkeypatch, tmp_path: Path) -> None:
     assert report["runs"][0]["run_id"] == "baseline-000"
     assert report["runs"][0]["fragmentation_score"] == 4
     assert report["runs"][0]["summary"]["num_noise"] == 1
+    assert report["runs"][0]["process_metrics"]["num_files_total"] == 1
+    assert report["runs"][0]["constraint_metrics"]["cluster_id_fragmentation_total"] == 0
 
 
 def test_emit_writes_json_file(tmp_path: Path) -> None:
