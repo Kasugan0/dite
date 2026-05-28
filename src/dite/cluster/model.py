@@ -32,6 +32,17 @@ class CandidateComponent:
 
 
 @dataclass
+class ClusterDraft:
+    """Intermediate topic-clustering draft before final naming."""
+
+    draft_cluster_id: int
+    member_file_ids: list[str]
+    origin: str
+    noise_members: list[str] = field(default_factory=list)
+    merge_candidates: list[int] = field(default_factory=list)
+
+
+@dataclass
 class AdjudicationRequest:
     """A structured request for boundary or merge adjudication."""
 
