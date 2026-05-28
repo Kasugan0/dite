@@ -335,6 +335,63 @@ def test_build_cluster_representations_uses_feature_signals() -> None:
     assert representation.representative_file_ids == ["doc-a"]
 
 
+def test_build_cluster_representations_can_use_llm_enhanced_mode() -> None:
+    features = [
+        DocumentFeatures(
+            file_id="doc-a",
+            path=Path("docs/a.txt"),
+            name="a.txt",
+            stem="a",
+            extension=".txt",
+            summary="Intro to linear algebra",
+            entities=EntityFeatures(
+                keywords=["matrix", "vector"],
+                topic="linear algebra",
+                domain="education",
+            ),
+        )
+    ]
+
+    class _Runtime:
+        def run_cluster_naming_batch(self, requests):
+            del requests
+            return [
+                type(
+                    "_Result",
+                    (),
+                    {
+                        "content": (
+                            '{"summary":"LLM summary","topic":"algebra",'
+                            '"domain":"education","keywords":["basis"],'
+                            '"evidence_summary":"llm evidence"}'
+                        ),
+                        "error": None,
+                    },
+                )()
+            ]
+
+    class _Client:
+        base_url = "https://api.example.com/v1"
+
+    config = Config()
+    config.cluster_representation.mode = "llm_enhanced"
+
+    representations = build_cluster_representations(
+        labels=np.array([0], dtype=int),
+        cluster_names={0: "Linear Algebra"},
+        document_features=features,
+        config=config,
+        client=_Client(),
+        request_runtime=_Runtime(),
+    )
+
+    representation = representations[0]
+    assert representation.summary == "LLM summary"
+    assert representation.topic == "algebra"
+    assert representation.keywords == ["basis"]
+    assert representation.evidence_summary == "llm evidence"
+
+
 def test_build_document_features_infers_domain_from_keywords_and_path() -> None:
     features = build_document_features(
         Path("games/minecraft/server-guide.md"),
