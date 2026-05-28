@@ -35,6 +35,11 @@ YAML 中的字符串值支持环境变量展开。
 - `request_profiles`
 - `clustering`
 - `processing`
+- `feature_extraction`
+- `candidate_generation`
+- `topic_clustering`
+- `cluster_adjudication`
+- `cluster_representation`
 - `cache`
 - `formats`
 - `i18n`
@@ -126,6 +131,80 @@ YAML 中的字符串值支持环境变量展开。
 - `small_cluster_merge_cosine_threshold=0.92`
 
 这些默认值已经比早期版本更保守，并且允许对小簇做一轮受限的簇间再判定。参数含义、已知问题和计划中的后续实验方向，见 `docs/clustering.md`。
+
+需要特别区分的一点：
+
+- `clustering` 仍然是 legacy HDBSCAN 参数域。
+- V2 的候选生成、主题聚类、边界裁决和簇表示，不再继续塞进这里。
+
+## `feature_extraction`
+
+字段包括：
+
+- `analysis_enabled`
+- `analysis_max_content_length`
+- `analysis_max_retries`
+
+当前行为要点：
+
+- 默认关闭。
+- 开启后，`DocumentFeatures` 会尝试使用 analyzer 增强摘要、关键词、主题、领域和布局提示。
+- analyzer 失败不会中止主流程，而是回退到现有轻规则特征。
+
+## `candidate_generation`
+
+字段包括：
+
+- `filename_token_overlap_threshold`
+- `content_similarity_threshold`
+- `component_min_edge_score`
+
+当前行为要点：
+
+- 控制 `CandidateEdge` 和 `CandidateComponent` 的保守生成阈值。
+- 正文完全一致的文件会优先形成 `near_duplicate` 关系。
+- 普通强语义关系不会再自动抢主题聚类主决策。
+
+## `topic_clustering`
+
+字段包括：
+
+- `mode`
+- `reducer`
+- `pca_components`
+- `allow_single_cluster`
+
+当前行为要点：
+
+- 这是 V2 主题聚类层的正式默认配置来源。
+- `PipelineOptions.cluster_mode`、`cluster_pca_components` 和 `cluster_allow_single_cluster` 仍存在，但只作为内部实验覆盖层，不是公开 CLI 配置接口。
+- `reducer="pca"` 且 `pca_components` 非空时，会在主题聚类前做 PCA。
+
+## `cluster_adjudication`
+
+字段包括：
+
+- `enable_llm_judging`
+- `edge_merge_threshold`
+- `request_score_threshold`
+
+当前行为要点：
+
+- 默认关闭 LLM 裁决。
+- 开启后，只会对 `edge_review` 类型请求尝试做保守 LLM 判定。
+- LLM 失败会回退到规则裁决结果。
+
+## `cluster_representation`
+
+字段包括：
+
+- `mode`
+
+当前行为要点：
+
+- `deterministic` 是默认模式。
+- `llm_enhanced` 会在有 `client` 和异步 runtime 时尝试增强簇摘要、主题、领域和证据说明。
+- 失败时会回退到 deterministic 聚合表示。
 
 ## `processing`
 

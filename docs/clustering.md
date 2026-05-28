@@ -33,11 +33,12 @@
 当前主流水线中的聚类阶段大致是：
 
 1. 对 embedding 做 L2 归一化。
-2. 使用 HDBSCAN 生成初始标签。
-3. 如果启用噪音修复，只对 `-1` 噪音点做后处理。
-4. 如果启用小簇再合并，对小簇做一轮受限的簇间再判定。
-5. 对非噪音簇生成名称。
-6. 可选地按“完全相同的簇名”做后置合并。
+2. 构建 `DocumentFeatures`、`CandidateEdge`、`CandidateComponent` 和 `ClusterDraft`。
+3. 使用 density 或 graph 主题聚类路径生成中间草案。
+4. 如果启用噪音修复，只对 `-1` 噪音点做后处理。
+5. 如果启用小簇再合并，对小簇做一轮受限的簇间再判定。
+6. 对非噪音簇生成名称与簇表示。
+7. 可选地按“完全相同的簇名”做后置合并。
 
 这里有两个现实约束必须讲清楚：
 
@@ -102,7 +103,7 @@
 
 ### 3. 当前实现更偏“直接高维 embedding 聚类”
 
-当前实现是在归一化后的 embedding 上直接运行 HDBSCAN，没有单独的降维阶段。
+当前默认实现仍以归一化后的 embedding 为主题聚类主输入，但现在已经存在显式的 `topic_clustering` 配置层，并支持 graph / PCA 等可选路径。
 
 这条路径不是错，但它需要更认真地做参数校准和样本验证。HDBSCAN 官方文档也明确提醒过，高维数据上的密度聚类更容易退化。
 
@@ -116,6 +117,12 @@
 
 - 当正文完全没有可用内容时，它会回退到稳定占位输入。
 - 这个回退不会混入真实文件名，但也不是纯正文信号。
+
+当前新增加的几个现实约束：
+
+- `CandidateComponent` 已经区分 `near_duplicate_group` 和 `strong_semantic_group`。
+- 只有 near-duplicate 族群会在主题聚类前保守预绑定。
+- `cluster_representation.mode` 和 `cluster_adjudication.enable_llm_judging` 已有真实可选路径，但默认仍保持保守关闭或 deterministic。
 
 ## 外部最佳实践对照
 
