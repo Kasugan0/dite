@@ -39,6 +39,11 @@ from dite.report.pdf import (
 from dite.util.api import build_sync_openai_client
 from dite.util.llm import format_api_error
 from dite.util.log import get_logger, setup_logging
+from dite.validation import (
+    build_constraint_metrics,
+    build_structure_metrics,
+    load_validation_corpus,
+)
 
 if TYPE_CHECKING:
     from dite.cluster.api import ClusterMetrics
@@ -264,18 +269,65 @@ def _run_pipeline_or_exit(
 def _build_report(
     files: list[Path],
     contents: list[str],
+    embeddings: np.ndarray | None,
     labels: np.ndarray,
     cluster_names: dict[int, str],
     cluster_metrics: ClusterMetrics | None = None,
     *,
+    validation_root: Path | None = None,
     document_features=None,
     candidate_edges=None,
     candidate_components=None,
+    cluster_drafts=None,
     adjudication_requests=None,
     adjudication_decisions=None,
     cluster_representations=None,
 ) -> dict:
     """构建聚类报告"""
+    structure_metrics_payload = None
+    constraint_metrics_payload = None
+    if embeddings is not None:
+        structure_metrics = build_structure_metrics(
+            type(
+                "_Result",
+                (),
+                {
+                    "labels": labels,
+                    "embeddings": embeddings,
+                    "document_features": document_features or [],
+                    "candidate_edges": candidate_edges or [],
+                },
+            )()
+        )
+        structure_metrics_payload = {
+            "density_validation_score": structure_metrics.density_validation_score,
+            "filename_bias_rate": structure_metrics.filename_bias_rate,
+        }
+    if validation_root is not None:
+        manifest_path = validation_root / "manifest.json"
+        if manifest_path.exists():
+            corpus = load_validation_corpus(validation_root, manifest_path=manifest_path)
+            constraint_metrics = build_constraint_metrics(
+                type(
+                    "_ConstraintResult",
+                    (),
+                    {
+                        "files": files,
+                        "labels": labels,
+                    },
+                )(),
+                corpus,
+            )
+            constraint_metrics_payload = {
+                "must_link_total": constraint_metrics.must_link_total,
+                "must_link_recall": constraint_metrics.must_link_recall,
+                "must_not_link_total": constraint_metrics.must_not_link_total,
+                "must_not_link_violations": constraint_metrics.must_not_link_violations,
+                "must_not_link_violation_rate": constraint_metrics.must_not_link_violation_rate,
+                "cluster_id_fragmentation_total": constraint_metrics.cluster_id_fragmentation_total,
+                "cluster_id_fragmentation_by_id": constraint_metrics.cluster_id_fragmentation_by_id,
+                "cluster_id_purity_by_id": constraint_metrics.cluster_id_purity_by_id,
+            }
     return _reporting_build_report(
         files,
         contents,
@@ -285,9 +337,12 @@ def _build_report(
         document_features=document_features,
         candidate_edges=candidate_edges,
         candidate_components=candidate_components,
+        cluster_drafts=cluster_drafts,
         adjudication_requests=adjudication_requests,
         adjudication_decisions=adjudication_decisions,
         cluster_representations=cluster_representations,
+        structure_metrics=structure_metrics_payload,
+        constraint_metrics=constraint_metrics_payload,
     )
 
 
@@ -444,12 +499,15 @@ def scan(
     report = _build_report(
         result.files,
         result.contents,
+        result.embeddings,
         result.labels,
         result.cluster_names,
         result.cluster_metrics,
+        validation_root=folder,
         document_features=result.document_features,
         candidate_edges=result.candidate_edges,
         candidate_components=result.candidate_components,
+        cluster_drafts=result.cluster_drafts,
         adjudication_requests=result.adjudication_requests,
         adjudication_decisions=result.adjudication_decisions,
         cluster_representations=result.cluster_representations,

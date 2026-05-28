@@ -25,9 +25,12 @@ def build_report(
     document_features=None,
     candidate_edges=None,
     candidate_components=None,
+    cluster_drafts=None,
     adjudication_requests=None,
     adjudication_decisions=None,
     cluster_representations=None,
+    structure_metrics=None,
+    constraint_metrics=None,
 ) -> dict:
     """Build a structured clustering report for CLI and JSON output."""
     from dite.cluster.api import _build_cluster_debug_labels
@@ -37,10 +40,16 @@ def build_report(
     clusters: dict[int, dict] = {}
     debug_labels = _build_cluster_debug_labels(labels)
     noise = []
+    feature_by_path = {
+        str(feature.path): feature for feature in (document_features or [])
+    }
     failed_count = 0
 
     for file, content, label in zip(files, contents, labels, strict=True):
-        is_failed = len(content.strip()) < 10
+        feature = feature_by_path.get(str(file))
+        is_failed = bool(
+            feature is not None and feature.quality_flags.extraction_failed
+        )
         if is_failed:
             failed_count += 1
 
@@ -85,10 +94,24 @@ def build_report(
             "num_document_features": len(document_features or []),
             "num_candidate_edges": len(candidate_edges or []),
             "num_candidate_components": len(candidate_components or []),
+            "num_cluster_drafts": len(cluster_drafts or []),
             "num_adjudication_requests": len(adjudication_requests or []),
             "num_adjudication_decisions": len(adjudication_decisions or []),
             "num_cluster_representations": len(cluster_representations or {}),
         },
+        "structure_metrics": {
+            "density_validation_score": (
+                None
+                if structure_metrics is None
+                else structure_metrics.get("density_validation_score")
+            ),
+            "filename_bias_rate": (
+                None
+                if structure_metrics is None
+                else structure_metrics.get("filename_bias_rate")
+            ),
+        },
+        "constraint_metrics": constraint_metrics or {},
         "clusters": [clusters[label] for label in sorted(clusters)],
         "cluster_diagnostics": {
             "small_cluster_merge_max_similarity": (
@@ -132,6 +155,16 @@ def build_report(
                     "confidence": component.confidence,
                 }
                 for component in (candidate_components or [])
+            ],
+            "cluster_drafts": [
+                {
+                    "draft_cluster_id": draft.draft_cluster_id,
+                    "member_file_ids": draft.member_file_ids,
+                    "origin": draft.origin,
+                    "noise_members": draft.noise_members,
+                    "merge_candidates": draft.merge_candidates,
+                }
+                for draft in (cluster_drafts or [])
             ],
             "adjudication_requests": [
                 {

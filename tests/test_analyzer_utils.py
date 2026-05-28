@@ -357,6 +357,7 @@ def test_verbose_report_uses_stable_cluster_debug_labels(capsys) -> None:
     report = _build_report(
         files=files,
         contents=contents,
+        embeddings=None,
         labels=np.array(labels, dtype=int),
         cluster_names={0: "Alpha", 2: "Beta"},
     )
@@ -377,6 +378,7 @@ def test_build_report_includes_feature_diagnostics() -> None:
         contents=["content"],
         labels=np.array([0], dtype=int),
         cluster_names={0: "Topic A"},
+        embeddings=np.array([[1.0, 0.0]], dtype=np.float32),
         document_features=[
             DocumentFeatures(
                 file_id="a",
@@ -409,16 +411,33 @@ def test_build_report_includes_feature_diagnostics() -> None:
                 confidence=1.0,
             )
         ],
+        cluster_drafts=[
+            type(
+                "_Draft",
+                (),
+                {
+                    "draft_cluster_id": 0,
+                    "member_file_ids": ["a"],
+                    "origin": "density",
+                    "noise_members": [],
+                    "merge_candidates": [],
+                },
+            )()
+        ],
     )
 
     assert report["summary"]["num_document_features"] == 1
     assert report["summary"]["num_candidate_edges"] == 1
     assert report["summary"]["num_candidate_components"] == 1
+    assert report["summary"]["num_cluster_drafts"] == 1
     assert report["summary"]["num_adjudication_requests"] == 0
     assert report["summary"]["num_adjudication_decisions"] == 0
     assert report["summary"]["num_cluster_representations"] == 0
     assert report["feature_diagnostics"]["filename_dominant_count"] == 1
     assert report["feature_diagnostics"]["short_text_count"] == 1
+    assert "density_validation_score" in report["structure_metrics"]
+    assert "filename_bias_rate" in report["structure_metrics"]
+    assert report["feature_diagnostics"]["cluster_drafts"][0]["origin"] == "density"
     assert report["feature_diagnostics"]["candidate_edges"][0]["edge_type"] == (
         "filename_similarity"
     )
