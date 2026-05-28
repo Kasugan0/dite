@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import json
+
+from openai import OpenAI
+
+from dite.app.config import Config
 from dite.cluster.model import (
     AdjudicationDecision,
     AdjudicationRequest,
     CandidateComponent,
     CandidateEdge,
 )
+from dite.util.api import ChatCompletionRequest
+from dite.util.llm import build_chat_completion_kwargs
 
 
 def build_adjudication_requests(
@@ -94,3 +101,115 @@ def apply_rule_adjudication(
             )
         )
     return decisions
+
+
+def apply_llm_adjudication(
+    requests: list[AdjudicationRequest],
+    *,
+    client: OpenAI,
+    config: Config,
+    request_runtime,
+) -> list[AdjudicationDecision]:
+    """Apply optional LLM adjudication for review-only edge requests."""
+    llm_requests: list[ChatCompletionRequest] = []
+    request_index: list[AdjudicationRequest] = []
+    for request in requests:
+        if request.request_type != "edge_review":
+            continue
+        llm_requests.append(
+            ChatCompletionRequest(
+                kwargs=build_chat_completion_kwargs(
+                    client=client,
+                    model=config.models.llm,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": _adjudication_prompt(request),
+                        }
+                    ],
+                    profile=config.request_profiles.cluster_naming,
+                    response_format={"type": "json_object"},
+                )
+            )
+        )
+        request_index.append(request)
+
+    if not llm_requests:
+        return []
+
+    responses = request_runtime.run_cluster_naming_batch(llm_requests)
+    decisions: list[AdjudicationDecision] = []
+    for request, response in zip(request_index, responses, strict=True):
+        if response.error is not None or not response.content:
+            decisions.append(
+                AdjudicationDecision(
+                    request_id=request.request_id,
+                    decision="review_edge",
+                    confidence=0.5,
+                    reason="LLM adjudication failed; fell back to review state.",
+                    supporting_evidence=request.evidence_bundle,
+                    model_used="llm",
+                    fallback_used=True,
+                )
+            )
+            continue
+        parsed = _parse_llm_adjudication(response.content)
+        if parsed is None:
+            decisions.append(
+                AdjudicationDecision(
+                    request_id=request.request_id,
+                    decision="review_edge",
+                    confidence=0.5,
+                    reason="LLM adjudication returned invalid JSON; fell back.",
+                    supporting_evidence=request.evidence_bundle,
+                    model_used="llm",
+                    fallback_used=True,
+                )
+            )
+            continue
+        decisions.append(
+            AdjudicationDecision(
+                request_id=request.request_id,
+                decision="merge_edge" if parsed["should_merge"] else "review_edge",
+                confidence=parsed["confidence"],
+                reason=parsed["reason"],
+                supporting_evidence=request.evidence_bundle,
+                model_used="llm",
+                fallback_used=False,
+            )
+        )
+    return decisions
+
+
+def _adjudication_prompt(request: AdjudicationRequest) -> str:
+    evidence = "\n".join(f"- {item}" for item in request.evidence_bundle) or "-"
+    quality_guard = ", ".join(request.quality_guard) or "-"
+    score = "-" if request.score is None else f"{request.score:.3f}"
+    return (
+        "Return strict JSON with keys should_merge, confidence, reason.\n"
+        f"Request type: {request.request_type}\n"
+        f"Trigger: {request.trigger_reason}\n"
+        f"Score: {score}\n"
+        f"Quality guard: {quality_guard}\n"
+        f"Subjects: {', '.join(request.subjects)}\n"
+        f"Evidence:\n{evidence}\n"
+    )
+
+
+def _parse_llm_adjudication(content: str) -> dict[str, object] | None:
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    should_merge = bool(payload.get("should_merge"))
+    confidence_raw = payload.get("confidence", 0.5)
+    try:
+        confidence = float(confidence_raw)
+    except (TypeError, ValueError):
+        confidence = 0.5
+    reason = str(payload.get("reason", "")).strip() or "LLM adjudication result"
+    return {
+        "should_merge": should_merge,
+        "confidence": max(0.0, min(confidence, 1.0)),
+        "reason": reason,
+    }

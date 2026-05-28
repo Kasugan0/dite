@@ -7,6 +7,7 @@ import numpy as np
 from dite.cluster import (
     AdjudicationDecision,
     AdjudicationRequest,
+    apply_llm_adjudication,
     apply_rule_adjudication,
     build_adjudication_requests,
 )
@@ -279,6 +280,51 @@ def test_build_adjudication_requests_and_rule_decisions() -> None:
     assert decisions[1].decision == "merge_edge"
     assert all(isinstance(item, AdjudicationRequest) for item in requests)
     assert all(isinstance(item, AdjudicationDecision) for item in decisions)
+
+
+def test_apply_llm_adjudication_can_override_review_edges() -> None:
+    requests = [
+        AdjudicationRequest(
+            request_id="edge:a->b",
+            request_type="edge_review",
+            subjects=["a", "b"],
+            evidence_bundle=["high cosine similarity"],
+            trigger_reason="content_similarity",
+            score=0.9,
+        )
+    ]
+
+    class _Runtime:
+        def run_cluster_naming_batch(self, requests):
+            del requests
+            return [
+                type(
+                    "_Result",
+                    (),
+                    {
+                        "content": (
+                            '{"should_merge": true, "confidence": 0.88, '
+                            '"reason": "shared topic"}'
+                        ),
+                        "error": None,
+                    },
+                )()
+            ]
+
+    class _Client:
+        base_url = "https://api.example.com/v1"
+
+    decisions = apply_llm_adjudication(
+        requests,
+        client=_Client(),
+        config=Config(),
+        request_runtime=_Runtime(),
+    )
+
+    assert len(decisions) == 1
+    assert decisions[0].decision == "merge_edge"
+    assert decisions[0].model_used == "llm"
+    assert decisions[0].fallback_used is False
 
 
 def test_cluster_representation_defaults() -> None:
