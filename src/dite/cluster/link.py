@@ -60,7 +60,14 @@ def build_candidate_edges(
             edge_type = None
             score = 0.0
 
-            if shared_titles:
+            if (
+                left.content_text.strip()
+                and left.content_text.strip() == right.content_text.strip()
+            ):
+                edge_type = "near_duplicate"
+                score = max(content_similarity, 1.0)
+                evidence.append("identical_content")
+            elif shared_titles:
                 edge_type = "title_match"
                 score = 1.0
                 evidence.append(f"title_match:{sorted(shared_titles)[0]}")
@@ -91,6 +98,19 @@ def build_candidate_edges(
             ):
                 quality_guard.append("filename_dominant")
 
+            hard_constraint = None
+            if (
+                edge_type == "content_similarity"
+                and not left.content_text.strip()
+                and not right.content_text.strip()
+                and content_similarity >= 0.999
+            ):
+                edge_type = "near_duplicate"
+                hard_constraint = "must_link"
+                evidence.append("identical_content")
+            elif edge_type == "near_duplicate":
+                hard_constraint = "must_link"
+
             edges.append(
                 CandidateEdge(
                     source_id=left.file_id,
@@ -98,6 +118,7 @@ def build_candidate_edges(
                     edge_type=edge_type,
                     score=score,
                     evidence=evidence,
+                    hard_constraint=hard_constraint,
                     quality_guard=quality_guard,
                 )
             )
@@ -113,9 +134,20 @@ def build_candidate_components(
 ) -> list[CandidateComponent]:
     """Build conservative connected components from strong edges."""
     adjacency: dict[str, set[str]] = defaultdict(set)
+    component_type_by_file_id: dict[str, str] = {}
     for edge in edges:
         if edge.score < min_edge_score:
             continue
+        if edge.hard_constraint == "must_link" or edge.edge_type == "near_duplicate":
+            component_type_by_file_id.setdefault(edge.source_id, "near_duplicate_group")
+            component_type_by_file_id.setdefault(edge.target_id, "near_duplicate_group")
+        else:
+            component_type_by_file_id.setdefault(
+                edge.source_id, "strong_semantic_group"
+            )
+            component_type_by_file_id.setdefault(
+                edge.target_id, "strong_semantic_group"
+            )
         adjacency[edge.source_id].add(edge.target_id)
         adjacency[edge.target_id].add(edge.source_id)
 
@@ -142,12 +174,21 @@ def build_candidate_components(
         if len(members) < 2:
             continue
         component_index += 1
+        member_types = {
+            component_type_by_file_id.get(member, "strong_semantic_group")
+            for member in members
+        }
+        component_type = (
+            "near_duplicate_group"
+            if member_types == {"near_duplicate_group"}
+            else "strong_semantic_group"
+        )
         components.append(
             CandidateComponent(
                 component_id=f"component-{component_index}",
                 member_file_ids=sorted(members),
-                component_type="strong_semantic_group",
-                formation_evidence=["strong_candidate_edges"],
+                component_type=component_type,
+                formation_evidence=[component_type],
                 confidence=1.0,
             )
         )

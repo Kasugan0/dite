@@ -209,6 +209,7 @@ def test_build_candidate_edges_and_components_from_titles_and_filename_tokens() 
     assert edges[0].edge_type == "title_match"
     assert len(components) == 1
     assert components[0].member_file_ids == ["doc-a", "doc-b"]
+    assert components[0].component_type == "strong_semantic_group"
 
 
 def test_build_candidate_edges_uses_content_embedding_similarity() -> None:
@@ -244,6 +245,7 @@ def test_build_candidate_edges_uses_content_embedding_similarity() -> None:
 
     assert len(edges) == 1
     assert edges[0].edge_type == "content_similarity"
+    assert edges[0].hard_constraint is None
     assert edges[0].source_id == "doc-a"
     assert edges[0].target_id == "doc-b"
 
