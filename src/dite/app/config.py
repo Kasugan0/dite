@@ -83,6 +83,50 @@ class ProcessingConfig:
 
 
 @dataclass
+class FeatureExtractionConfig:
+    """Optional feature enrichment settings for clustering V2."""
+
+    analysis_enabled: bool = False
+    analysis_max_content_length: int = 4000
+    analysis_max_retries: int = 2
+
+
+@dataclass
+class CandidateGenerationConfig:
+    """Candidate edge and component generation controls."""
+
+    filename_token_overlap_threshold: float = 0.8
+    content_similarity_threshold: float = 0.92
+    component_min_edge_score: float = 0.9
+
+
+@dataclass
+class TopicClusteringConfig:
+    """Topic-clustering controls beyond legacy HDBSCAN defaults."""
+
+    mode: str = "density"
+    reducer: str = "none"
+    pca_components: int | None = None
+    allow_single_cluster: bool = False
+
+
+@dataclass
+class ClusterAdjudicationConfig:
+    """Boundary adjudication settings for V2."""
+
+    enable_llm_judging: bool = False
+    edge_merge_threshold: float = 0.92
+    request_score_threshold: float = 0.85
+
+
+@dataclass
+class ClusterRepresentationConfig:
+    """Cluster representation settings for V2."""
+
+    mode: str = "deterministic"
+
+
+@dataclass
 class CacheConfig:
     """缓存配置"""
 
@@ -138,6 +182,21 @@ class Config:
     )
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     processing: ProcessingConfig = field(default_factory=ProcessingConfig)
+    feature_extraction: FeatureExtractionConfig = field(
+        default_factory=FeatureExtractionConfig
+    )
+    candidate_generation: CandidateGenerationConfig = field(
+        default_factory=CandidateGenerationConfig
+    )
+    topic_clustering: TopicClusteringConfig = field(
+        default_factory=TopicClusteringConfig
+    )
+    cluster_adjudication: ClusterAdjudicationConfig = field(
+        default_factory=ClusterAdjudicationConfig
+    )
+    cluster_representation: ClusterRepresentationConfig = field(
+        default_factory=ClusterRepresentationConfig
+    )
     cache: CacheConfig = field(default_factory=CacheConfig)
     formats: FormatsConfig = field(default_factory=FormatsConfig)
     i18n: I18nConfig = field(default_factory=I18nConfig)
@@ -225,6 +284,29 @@ def _dict_to_config(data: dict[str, Any]) -> Config:
 
     if "processing" in data:
         config.processing = ProcessingConfig(**data["processing"])
+
+    if "feature_extraction" in data:
+        config.feature_extraction = FeatureExtractionConfig(
+            **data["feature_extraction"]
+        )
+
+    if "candidate_generation" in data:
+        config.candidate_generation = CandidateGenerationConfig(
+            **data["candidate_generation"]
+        )
+
+    if "topic_clustering" in data:
+        config.topic_clustering = TopicClusteringConfig(**data["topic_clustering"])
+
+    if "cluster_adjudication" in data:
+        config.cluster_adjudication = ClusterAdjudicationConfig(
+            **data["cluster_adjudication"]
+        )
+
+    if "cluster_representation" in data:
+        config.cluster_representation = ClusterRepresentationConfig(
+            **data["cluster_representation"]
+        )
 
     if "cache" in data:
         cache_data = data["cache"].copy()

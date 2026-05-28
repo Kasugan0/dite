@@ -173,6 +173,77 @@ def test_load_config_reads_docling_device(tmp_path: Path, monkeypatch) -> None:
     assert cfg.processing.docling_device == "cpu"
 
 
+def test_load_config_reads_feature_extraction_settings(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    global_config_path = tmp_path / ".config" / "dite" / "config.yaml"
+    global_config_path.parent.mkdir(parents=True, exist_ok=True)
+    global_config_path.write_text(
+        "\n".join(
+            [
+                "feature_extraction:",
+                "  analysis_enabled: true",
+                "  analysis_max_content_length: 1234",
+                "  analysis_max_retries: 5",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = load_config()
+
+    assert cfg.feature_extraction.analysis_enabled is True
+    assert cfg.feature_extraction.analysis_max_content_length == 1234
+    assert cfg.feature_extraction.analysis_max_retries == 5
+
+
+def test_load_config_reads_v2_clustering_domains(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    global_config_path = tmp_path / ".config" / "dite" / "config.yaml"
+    global_config_path.parent.mkdir(parents=True, exist_ok=True)
+    global_config_path.write_text(
+        "\n".join(
+            [
+                "candidate_generation:",
+                "  filename_token_overlap_threshold: 0.7",
+                "  content_similarity_threshold: 0.88",
+                "  component_min_edge_score: 0.91",
+                "topic_clustering:",
+                "  mode: graph",
+                "  reducer: pca",
+                "  pca_components: 64",
+                "  allow_single_cluster: true",
+                "cluster_adjudication:",
+                "  enable_llm_judging: true",
+                "  edge_merge_threshold: 0.95",
+                "  request_score_threshold: 0.9",
+                "cluster_representation:",
+                "  mode: llm_enhanced",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = load_config()
+
+    assert cfg.candidate_generation.filename_token_overlap_threshold == 0.7
+    assert cfg.candidate_generation.content_similarity_threshold == 0.88
+    assert cfg.candidate_generation.component_min_edge_score == 0.91
+    assert cfg.topic_clustering.mode == "graph"
+    assert cfg.topic_clustering.reducer == "pca"
+    assert cfg.topic_clustering.pca_components == 64
+    assert cfg.topic_clustering.allow_single_cluster is True
+    assert cfg.cluster_adjudication.enable_llm_judging is True
+    assert cfg.cluster_adjudication.edge_merge_threshold == 0.95
+    assert cfg.cluster_adjudication.request_score_threshold == 0.9
+    assert cfg.cluster_representation.mode == "llm_enhanced"
+
+
 def test_load_config_reads_api_runtime_fields(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
 
