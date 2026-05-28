@@ -24,7 +24,7 @@ from dite.doc import (
     QualityFlags,
     build_document_features,
 )
-
+from dite.app.config import Config
 
 def test_document_features_defaults_and_top_level_proxies() -> None:
     features = DocumentFeatures(
@@ -344,3 +344,52 @@ def test_build_document_features_infers_domain_from_keywords_and_path() -> None:
     assert features.domain == "gaming"
     assert "minecraft" in features.topic
     assert "server" in features.topic
+
+
+def test_build_document_features_can_use_optional_analysis() -> None:
+    class _Completions:
+        def create(self, **kwargs):
+            del kwargs
+
+            class _Message:
+                content = (
+                    '{"layout":{"type":"technical report","columns":"double",'
+                    '"has_table":true,"visual_elements":["image"]},'
+                    '"content":{"topic":"clustering","keywords":["hdbscan","draft"],'
+                    '"language":"en","domain":"tech"},'
+                    '"summary":"Cluster pipeline analysis",'
+                    '"template_hints":"arXiv paper","confidence":0.9}'
+                )
+
+            class _Choice:
+                message = _Message()
+
+            class _Response:
+                choices = [_Choice()]
+
+            return _Response()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    config = Config()
+    config.feature_extraction.analysis_enabled = True
+
+    features = build_document_features(
+        Path("research/cluster-paper.md"),
+        "HDBSCAN clustering pipeline draft analysis",
+        config=config,
+        client=_Client(),
+    )
+
+    assert features.summary == "Cluster pipeline analysis"
+    assert features.keywords == ["hdbscan", "draft"]
+    assert features.topic == "clustering"
+    assert features.domain == "tech"
+    assert features.language == "en"
+    assert features.layout.document_type == "technical report"
+    assert features.layout.has_table is True
+    assert features.layout.has_image_heavy_layout is True

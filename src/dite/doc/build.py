@@ -5,6 +5,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from openai import OpenAI
+
+from dite.app.config import Config
+from dite.doc.analyze import analyze_document
 from dite.doc.model import (
     DocumentFeatures,
     EntityFeatures,
@@ -97,6 +101,8 @@ def build_document_features(
     file_path: Path,
     content: str,
     *,
+    config: Config | None = None,
+    client: OpenAI | None = None,
     file_report=None,
 ) -> DocumentFeatures:
     """Build a conservative V2 feature object from current pipeline artifacts."""
@@ -118,12 +124,56 @@ def build_document_features(
         ),
         short_text=len(stripped) < _SHORT_TEXT_THRESHOLD,
         filename_dominant=(
-            len(stripped) < _SHORT_TEXT_THRESHOLD and bool(file_path.stem)
+            ((not primary_success) or len(stripped) < _FAILED_TEXT_THRESHOLD)
+            and bool(file_path.stem)
         ),
     )
     title_candidates = _title_candidates(file_path, content)
     keywords, topic = _infer_keywords_and_topic(content, title_candidates)
     domain = _infer_domain(keywords, parent_tokens)
+    language = ""
+    summary = title_candidates[0] if title_candidates else ""
+    layout = LayoutHints()
+    entities = EntityFeatures(
+        keywords=keywords,
+        topic=topic,
+        domain=domain,
+    )
+
+    analysis_enabled = bool(
+        config is not None
+        and config.feature_extraction.analysis_enabled
+        and client is not None
+        and content.strip()
+    )
+    if analysis_enabled:
+        analysis = analyze_document(
+            client,
+            content,
+            config=config,
+            max_content_length=config.feature_extraction.analysis_max_content_length,
+            max_retries=config.feature_extraction.analysis_max_retries,
+        )
+        if analysis.summary.strip():
+            summary = analysis.summary.strip()
+        if analysis.content.keywords:
+            entities.keywords = analysis.content.keywords
+        if analysis.content.topic.strip():
+            entities.topic = analysis.content.topic.strip()
+        if analysis.content.domain.strip():
+            entities.domain = analysis.content.domain.strip()
+        language = analysis.content.language.strip()
+        layout = LayoutHints(
+            document_type=analysis.layout.type,
+            columns=analysis.layout.columns,
+            has_table=analysis.layout.has_table,
+            has_image_heavy_layout=("image" in analysis.layout.visual_elements),
+            template_signals=(
+                [analysis.template_hints] if analysis.template_hints.strip() else []
+            ),
+        )
+        quality_flags.low_confidence_analysis = analysis.confidence < 0.5
+        quality_flags.language_uncertain = language in {"", "mixed"}
 
     return DocumentFeatures(
         file_id=str(file_path),
@@ -137,20 +187,16 @@ def build_document_features(
             if len(content) > _EXCERPT_LIMIT
             else content
         ),
-        language="",
+        language=language,
         token_count_estimate=len(_TOKEN_PATTERN.findall(content)),
-        summary=title_candidates[0] if title_candidates else "",
+        summary=summary,
         metadata=MetadataFeatures(
             file_name_tokens=_tokenize_text(file_path.stem),
             parent_path_tokens=parent_tokens,
             title_candidates=title_candidates,
         ),
-        entities=EntityFeatures(
-            keywords=keywords,
-            topic=topic,
-            domain=domain,
-        ),
-        layout=LayoutHints(),
+        entities=entities,
+        layout=layout,
         quality_flags=quality_flags,
         selected_source=str(selected_source),
         extraction_trace=extraction_trace,
