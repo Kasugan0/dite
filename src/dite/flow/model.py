@@ -12,6 +12,7 @@ from dite.cluster.model import (
     AdjudicationRequest,
     CandidateComponent,
     CandidateEdge,
+    ClusterDraft,
     ClusterMetrics,
     ClusterRepresentation,
 )
@@ -29,9 +30,9 @@ class PipelineOptions:
     merge_same_name: bool = False
     allow_vlm_api: bool = True
     embedding_input_mode: str = "with_filename"
-    cluster_allow_single_cluster: bool = False
+    cluster_allow_single_cluster: bool | None = None
     cluster_pca_components: int | None = None
-    cluster_mode: str = "density"
+    cluster_mode: str | None = None
     exclude_paths: list[Path] = field(default_factory=list)
 
 
@@ -50,6 +51,7 @@ class PipelineResult:
     document_features: list[DocumentFeatures] = field(default_factory=list)
     candidate_edges: list[CandidateEdge] = field(default_factory=list)
     candidate_components: list[CandidateComponent] = field(default_factory=list)
+    cluster_drafts: list[ClusterDraft] = field(default_factory=list)
     adjudication_requests: list[AdjudicationRequest] = field(default_factory=list)
     adjudication_decisions: list[AdjudicationDecision] = field(default_factory=list)
     noise_repaired: int = 0

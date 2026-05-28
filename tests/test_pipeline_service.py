@@ -2735,7 +2735,7 @@ def test_cluster_documents_merges_small_cluster_with_real_hdbscan_defaults() -> 
     assert result.metrics.small_clusters_merged >= 0
 
 
-def test_pipeline_candidate_components_can_merge_canonical_labels(
+def test_pipeline_strong_semantic_components_do_not_prebind_canonical_labels(
     tmp_path: Path, monkeypatch
 ) -> None:
     doc_a = tmp_path / "linear-algebra-a.txt"
@@ -2806,12 +2806,83 @@ def test_pipeline_candidate_components_can_merge_canonical_labels(
         str(doc_a),
         str(doc_b),
     ]
+    assert result.candidate_components[0].component_type == "near_duplicate_group"
     assert result.labels.tolist() == [0, 0, 2]
-    assert len(set(result.labels)) <= result.cluster_metrics.initial_clusters + 1
     assert len(result.document_features) == 3
     assert result.document_features[0].path == doc_a
     assert result.document_features[1].path == doc_b
     assert result.document_features[2].path == doc_c
+
+
+def test_pipeline_near_duplicate_components_can_prebind_canonical_labels(
+    tmp_path: Path, monkeypatch
+) -> None:
+    doc_a = tmp_path / "dup-a.txt"
+    doc_b = tmp_path / "dup-b.txt"
+    doc_c = tmp_path / "other.txt"
+    for path in (doc_a, doc_b, doc_c):
+        path.write_text("payload", encoding="utf-8")
+
+    service = PipelineService(client=object(), config=Config(), cache=None)
+
+    def fake_extract_contents(files, options):
+        del options
+        contents = [
+            "Identical content block",
+            "Identical content block",
+            "Different topic",
+        ]
+        file_hashes = [f"hash-{index}" for index, _ in enumerate(files)]
+        reports = [
+            ExtractionFileReport(
+                file=file,
+                primary_extractor="text",
+                primary_success=True,
+                primary_error=None,
+                source_profile=None,
+                source_effective_length=len(content),
+                selected_source="primary",
+                final_effective_length=len(content),
+                excerpt_was_truncated=False,
+                vlm_api_page_calls=0,
+                sample_page_limit=None,
+                file_hash=file_hashes[index],
+            )
+            for index, (file, content) in enumerate(zip(files, contents, strict=True))
+        ]
+        return contents, file_hashes, ExtractionSummary(), reports
+
+    monkeypatch.setattr(service, "_extract_contents", fake_extract_contents)
+    monkeypatch.setattr(
+        service,
+        "_vectorize",
+        lambda files, file_hashes, contents, options: np.array(
+            [[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float32
+        ),
+    )
+    monkeypatch.setattr(
+        "dite.flow.api.cluster_documents",
+        lambda embeddings, **kwargs: make_cluster_result(
+            [0, 1, 2],
+            metrics=ClusterMetrics(initial_clusters=3),
+        ),
+    )
+    monkeypatch.setattr(
+        "dite.flow.api.generate_all_cluster_names",
+        lambda client, result, contents, files, **kwargs: make_cluster_result(
+            result,
+            cluster_names={0: "Duplicates", 2: "Other"},
+        ),
+    )
+
+    result = service.run(
+        tmp_path,
+        PipelineOptions(use_cache=False, use_embedding_cache=False),
+    )
+
+    assert len(result.candidate_components) == 1
+    assert result.candidate_components[0].component_type == "near_duplicate_group"
+    assert result.labels.tolist() == [0, 0, 2]
 
 
 def test_pipeline_graph_cluster_mode_uses_candidate_components_as_clusters(
@@ -2880,6 +2951,71 @@ def test_pipeline_graph_cluster_mode_uses_candidate_components_as_clusters(
     assert result.labels.tolist() == [0, 0, -1]
     assert result.cluster_metrics.initial_clusters == 1
     assert result.cluster_metrics.initial_noise == 1
+
+
+def test_pipeline_uses_topic_clustering_config_when_options_unset(
+    tmp_path: Path, monkeypatch
+) -> None:
+    doc_a = tmp_path / "linear-algebra-a.txt"
+    doc_b = tmp_path / "linear-algebra-b.txt"
+    doc_c = tmp_path / "minecraft-guide.txt"
+    for path in (doc_a, doc_b, doc_c):
+        path.write_text("payload", encoding="utf-8")
+
+    config = Config()
+    config.topic_clustering.mode = "graph"
+    service = PipelineService(client=object(), config=config, cache=None)
+
+    def fake_extract_contents(files, options):
+        del options
+        contents = [
+            "Linear Algebra Notes",
+            "Linear Algebra Notes",
+            "Minecraft Guide",
+        ]
+        file_hashes = [f"hash-{index}" for index, _ in enumerate(files)]
+        reports = [
+            ExtractionFileReport(
+                file=file,
+                primary_extractor="text",
+                primary_success=True,
+                primary_error=None,
+                source_profile=None,
+                source_effective_length=len(content),
+                selected_source="primary",
+                final_effective_length=len(content),
+                excerpt_was_truncated=False,
+                vlm_api_page_calls=0,
+                sample_page_limit=None,
+                file_hash=file_hashes[index],
+            )
+            for index, (file, content) in enumerate(zip(files, contents, strict=True))
+        ]
+        return contents, file_hashes, ExtractionSummary(), reports
+
+    monkeypatch.setattr(service, "_extract_contents", fake_extract_contents)
+    monkeypatch.setattr(
+        service,
+        "_vectorize",
+        lambda files, file_hashes, contents, options: np.array(
+            [[1.0, 0.0], [0.95, 0.05], [0.0, 1.0]], dtype=np.float32
+        ),
+    )
+    monkeypatch.setattr(
+        "dite.flow.api.generate_all_cluster_names",
+        lambda client, result, contents, files, **kwargs: make_cluster_result(
+            result,
+            cluster_names={0: "Linear Algebra"},
+        ),
+    )
+
+    result = service.run(
+        tmp_path,
+        PipelineOptions(use_cache=False, use_embedding_cache=False),
+    )
+
+    assert result.labels.tolist() == [0, 0, -1]
+    assert result.cluster_drafts[0].origin == "graph"
 
 
 def test_pipeline_graph_cluster_mode_falls_back_for_unconnected_tail(

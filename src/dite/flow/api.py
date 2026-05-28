@@ -361,6 +361,7 @@ class PipelineService:
                 embeddings=np.array([]),
                 labels=np.array([]),
                 cluster_names={},
+                cluster_drafts=[],
                 extraction=ExtractionSummary(),
                 file_reports=[],
             )
@@ -378,6 +379,8 @@ class PipelineService:
                 canonical_indices=canonical_indices,
                 options=options,
                 config=self.config,
+                client=self.client,
+                request_runtime=request_runtime,
                 vectorize=self._vectorize,
                 expand_noise_repaired_count=self._expand_noise_repaired_count,
                 cluster_documents_fn=cluster_documents,
@@ -418,17 +421,19 @@ class PipelineService:
                 file_hashes,
                 len(files),
             )
+            expanded_document_features = self._expand_document_features_by_file_hashes(
+                canonical_indices,
+                cluster_stage.document_features,
+                file_hashes,
+            )
 
         return PipelineResult(
             files=files,
             contents=contents,
-            document_features=self._expand_document_features_by_file_hashes(
-                canonical_indices,
-                cluster_stage.document_features,
-                file_hashes,
-            ),
+            document_features=expanded_document_features,
             candidate_edges=cluster_stage.candidate_edges,
             candidate_components=cluster_stage.candidate_components,
+            cluster_drafts=cluster_stage.cluster_drafts,
             adjudication_requests=cluster_stage.adjudication_requests,
             adjudication_decisions=cluster_stage.adjudication_decisions,
             embeddings=embeddings,
@@ -437,11 +442,10 @@ class PipelineService:
             cluster_representations=build_cluster_representations(
                 labels=labels,
                 cluster_names=cluster_result.cluster_names,
-                document_features=self._expand_document_features_by_file_hashes(
-                    canonical_indices,
-                    cluster_stage.document_features,
-                    file_hashes,
-                ),
+                document_features=expanded_document_features,
+                config=self.config,
+                client=self.client,
+                request_runtime=request_runtime,
             ),
             noise_repaired=noise_repaired,
             clusters_merged=cluster_result.total_clusters_merged,
@@ -488,6 +492,7 @@ class PipelineService:
             labels=np.array([]),
             cluster_names={},
             cluster_representations={},
+            cluster_drafts=[],
             extraction=extraction_stage.summary,
             file_reports=extraction_stage.file_reports,
         )

@@ -11,13 +11,18 @@ import numpy as np
 from sklearn.decomposition import PCA
 
 from dite.app.config import Config
-from dite.cluster import apply_rule_adjudication, build_adjudication_requests
+from dite.cluster import (
+    apply_llm_adjudication,
+    apply_rule_adjudication,
+    build_adjudication_requests,
+)
 from dite.cluster.link import build_candidate_components, build_candidate_edges
 from dite.cluster.model import (
     AdjudicationDecision,
     AdjudicationRequest,
     CandidateComponent,
     CandidateEdge,
+    ClusterDraft,
 )
 from dite.doc import DocumentFeatures, build_document_features
 from dite.doc.embed import normalize_embeddings
@@ -38,8 +43,51 @@ class CanonicalClusterStageResult:
     document_features: list[DocumentFeatures]
     candidate_edges: list[CandidateEdge]
     candidate_components: list[CandidateComponent]
+    cluster_drafts: list[ClusterDraft]
     adjudication_requests: list[AdjudicationRequest]
     adjudication_decisions: list[AdjudicationDecision]
+
+
+def build_cluster_drafts(
+    labels: np.ndarray,
+    *,
+    canonical_document_features: list[DocumentFeatures],
+    origin: str,
+) -> list[ClusterDraft]:
+    """Build explicit intermediate cluster drafts from current labels."""
+    label_count = min(len(labels), len(canonical_document_features))
+    labels = labels[:label_count]
+    features = canonical_document_features[:label_count]
+    file_ids_by_label: dict[int, list[str]] = {}
+    noise_members: list[str] = []
+    for label, feature in zip(labels, features, strict=True):
+        if int(label) == -1:
+            noise_members.append(feature.file_id)
+            continue
+        file_ids_by_label.setdefault(int(label), []).append(feature.file_id)
+
+    drafts: list[ClusterDraft] = []
+    for label in sorted(file_ids_by_label):
+        drafts.append(
+            ClusterDraft(
+                draft_cluster_id=label,
+                member_file_ids=sorted(file_ids_by_label[label]),
+                origin=origin,
+                noise_members=[],
+                merge_candidates=[],
+            )
+        )
+    if noise_members:
+        drafts.append(
+            ClusterDraft(
+                draft_cluster_id=-1,
+                member_file_ids=[],
+                origin=origin,
+                noise_members=sorted(noise_members),
+                merge_candidates=[],
+            )
+        )
+    return drafts
 
 
 def apply_candidate_component_links(
@@ -59,6 +107,8 @@ def apply_candidate_component_links(
     merged_any = False
 
     for component in candidate_components:
+        if component.component_type != "near_duplicate_group":
+            continue
         member_indices = [
             index_by_file_id[file_id]
             for file_id in component.member_file_ids
@@ -152,7 +202,23 @@ def cluster_canonical_documents(
     cluster_documents_fn,
 ) -> ClusterResult:
     """Run clustering on canonical embeddings and apply conservative links."""
-    if options.cluster_mode == "graph":
+    cluster_mode = options.cluster_mode or config.topic_clustering.mode
+    allow_single_cluster = (
+        options.cluster_allow_single_cluster
+        if options.cluster_allow_single_cluster is not None
+        else config.topic_clustering.allow_single_cluster
+    )
+    pca_components_option = (
+        options.cluster_pca_components
+        if options.cluster_pca_components is not None
+        else (
+            config.topic_clustering.pca_components
+            if config.topic_clustering.reducer == "pca"
+            else None
+        )
+    )
+
+    if cluster_mode == "graph":
         labels = np.full(len(canonical_document_features), -1, dtype=int)
         file_id_to_index = {
             feature.file_id: index
@@ -205,7 +271,7 @@ def cluster_canonical_documents(
                 config=config,
                 repair_noise=options.repair_noise,
                 clustering=config.clustering,
-                allow_single_cluster=options.cluster_allow_single_cluster,
+                allow_single_cluster=allow_single_cluster,
                 item_names=[item_names[index] for index in unassigned_indices],
             )
             residual_labels = residual_result.labels.copy()
@@ -244,9 +310,9 @@ def cluster_canonical_documents(
         )
 
     cluster_inputs = embeddings
-    if options.cluster_pca_components is not None:
+    if pca_components_option is not None:
         pca_components = min(
-            options.cluster_pca_components,
+            pca_components_option,
             embeddings.shape[0],
             embeddings.shape[1],
         )
@@ -261,7 +327,7 @@ def cluster_canonical_documents(
         config=config,
         repair_noise=options.repair_noise,
         clustering=config.clustering,
-        allow_single_cluster=options.cluster_allow_single_cluster,
+        allow_single_cluster=allow_single_cluster,
         item_names=item_names,
     )
     return apply_candidate_component_links(
@@ -280,15 +346,24 @@ def build_canonical_cluster_stage(
     canonical_indices: list[int],
     options: Any,
     config: Config,
+    client,
+    request_runtime,
     vectorize,
     expand_noise_repaired_count,
     cluster_documents_fn,
 ) -> CanonicalClusterStageResult:
     """Build all V2 stage objects and canonical clustering outputs."""
     document_features = [
-        build_document_features(file, content, file_report=report)
+        build_document_features(
+            file,
+            content,
+            config=config,
+            client=client,
+            file_report=report,
+        )
         for file, content, report in zip(files, contents, file_reports, strict=True)
     ]
+    cluster_mode = options.cluster_mode or config.topic_clustering.mode
     canonical_files = [files[index] for index in canonical_indices]
     canonical_hashes = [file_hashes[index] for index in canonical_indices]
     canonical_contents = [contents[index] for index in canonical_indices]
@@ -316,14 +391,45 @@ def build_canonical_cluster_stage(
     ):
         canonical_feature.content_embedding = embedding
 
-    candidate_edges = build_candidate_edges(canonical_document_features)
+    candidate_edges = build_candidate_edges(
+        canonical_document_features,
+        min_filename_token_overlap=(
+            config.candidate_generation.filename_token_overlap_threshold
+        ),
+        min_content_similarity=config.candidate_generation.content_similarity_threshold,
+    )
     candidate_components = build_candidate_components(
-        canonical_document_features, candidate_edges
+        canonical_document_features,
+        candidate_edges,
+        min_edge_score=config.candidate_generation.component_min_edge_score,
     )
     adjudication_requests = build_adjudication_requests(
-        candidate_edges, candidate_components
+        candidate_edges,
+        candidate_components,
+        score_threshold=config.cluster_adjudication.request_score_threshold,
     )
-    adjudication_decisions = apply_rule_adjudication(adjudication_requests)
+    adjudication_decisions = apply_rule_adjudication(
+        adjudication_requests,
+        edge_merge_threshold=config.cluster_adjudication.edge_merge_threshold,
+    )
+    if (
+        config.cluster_adjudication.enable_llm_judging
+        and client is not None
+        and getattr(client, "chat", None) is not None
+        and request_runtime is not None
+    ):
+        llm_decisions = apply_llm_adjudication(
+            adjudication_requests,
+            client=client,
+            config=config,
+            request_runtime=request_runtime,
+        )
+        decisions_by_request = {
+            decision.request_id: decision for decision in adjudication_decisions
+        }
+        for decision in llm_decisions:
+            decisions_by_request[decision.request_id] = decision
+        adjudication_decisions = list(decisions_by_request.values())
 
     cluster_result = cluster_canonical_documents(
         canonical_embeddings,
@@ -341,6 +447,11 @@ def build_canonical_cluster_stage(
         adjudication_requests,
         adjudication_decisions,
     )
+    cluster_drafts = build_cluster_drafts(
+        cluster_result.labels,
+        canonical_document_features=canonical_document_features,
+        origin=cluster_mode,
+    )
     noise_repaired = expand_noise_repaired_count(
         canonical_indices,
         cluster_result.repaired_mask,
@@ -353,6 +464,7 @@ def build_canonical_cluster_stage(
         document_features=canonical_document_features,
         candidate_edges=candidate_edges,
         candidate_components=candidate_components,
+        cluster_drafts=cluster_drafts,
         adjudication_requests=adjudication_requests,
         adjudication_decisions=adjudication_decisions,
     )
